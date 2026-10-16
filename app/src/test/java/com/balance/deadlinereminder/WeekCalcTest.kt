@@ -1,0 +1,276 @@
+package com.balance.deadlinereminder
+
+import com.balance.deadlinereminder.data.AppSettings
+import com.balance.deadlinereminder.data.Course
+import com.balance.deadlinereminder.data.DayKind
+import com.balance.deadlinereminder.data.DayOverride
+import com.balance.deadlinereminder.data.WeekParity
+import com.balance.deadlinereminder.domain.WeekCalc
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+
+class WeekCalcTest {
+
+    private val term = LocalDate.of(2026, 9, 7) // 周一
+
+    private fun course(
+        id: String = "c1",
+        dayOfWeek: Int = 1,
+        startPeriod: Int = 1,
+        endPeriod: Int = 1,
+        startWeek: Int = 1,
+        endWeek: Int = 16,
+        parity: WeekParity = WeekParity.ALL,
+    ) = Course(
+        id = id,
+        name = "高等数学",
+        location = "教三201",
+        dayOfWeek = dayOfWeek,
+        startPeriod = startPeriod,
+        endPeriod = endPeriod,
+        startWeek = startWeek,
+        endWeek = endWeek,
+        parity = parity,
+    )
+
+    @Test
+    fun weekOf_countsFromFirstMonday() {
+        assertEquals(1, WeekCalc.weekOf(term, term))
+        assertEquals(1, WeekCalc.weekOf(term, term.plusDays(6)))
+        assertEquals(2, WeekCalc.weekOf(term, term.plusDays(7)))
+        assertEquals(3, WeekCalc.weekOf(term, LocalDate.of(2026, 9, 21)))
+        assertEquals(0, WeekCalc.weekOf(term, term.minusDays(1)))
+    }
+
+    @Test
+    fun calibratedWeek_advancesOnMondayAndWorksWithoutTermDate() {
+        val settings = AppSettings(manualWeek = 6, manualWeekMonday = "2026-10-12") // 校准锚点
+        assertEquals(6, WeekCalc.teachingWeek(settings, LocalDate.parse("2026-10-15")))
+        assertEquals(6, WeekCalc.teachingWeek(settings, LocalDate.parse("2026-10-18")))
+        assertEquals(7, WeekCalc.teachingWeek(settings, LocalDate.parse("2026-10-19")))
+        assertEquals(5, WeekCalc.teachingWeek(settings, LocalDate.parse("2026-10-11")))
+        assertEquals(LocalDate.parse("2026-09-07"), WeekCalc.termMonday(settings))
+    }
+
+    @Test
+    fun invalidCalibration_fallsBackToOriginalTerm() {
+        val settings = AppSettings(termStartDate = term.toString(), manualWeek = 6, manualWeekMonday = "bad")
+        assertEquals(1, WeekCalc.teachingWeek(settings, term))
+    }
+
+    @Test
+    fun calibratedTodayAndReminders_useSameWeekAndRespectHolidays() {
+        val date = LocalDate.parse("2026-10-15") // 周四第六周
+        val settings = AppSettings(manualWeek = 6, manualWeekMonday = "2026-10-12")
+        val lesson = course(dayOfWeek = 4).copy(weekSpec = "6") // 只在校准周出现
+        assertEquals(6, WeekCalc.coursesOn(settings, listOf(lesson), date).single().week)
+        assertEquals(1, WeekCalc.upcoming(listOf(lesson), settings, date.atStartOfDay(), 0).size)
+        assertTrue(WeekCalc.coursesOn(settings.copy(overrides = listOf(DayOverride(date.toString(), DayKind.HOLIDAY))), listOf(lesson), date).isEmpty())
+    }
+
+    @Test
+    fun explicitSwapWeek_winsOverCalibration() {
+        val date = LocalDate.parse("2026-10-17") // 周六借用第三周周一
+        val settings = AppSettings(manualWeek = 6, manualWeekMonday = "2026-10-12",
+            overrides = listOf(DayOverride(date.toString(), DayKind.SWAP, 1, swapToWeek = 3)))
+        val lesson = course().copy(weekSpec = "3")
+        assertEquals(3, WeekCalc.coursesOn(settings, listOf(lesson), date).single().week)
+    }
+
+    @Test
+    fun weekOf_returnsZeroWithoutTermStart() {
+        assertEquals(0, WeekCalc.weekOf(null, LocalDate.now()))
+    }
+
+    @Test
+    fun restoringTermBaseline_ignoresCalibrationAnchor() {
+        val date = LocalDate.parse("2026-10-15") // 开学基准第六周，校准为第八周
+        val calibrated = AppSettings(termStartDate = term.toString(), manualWeek = 8, manualWeekMonday = "2026-10-12")
+        val restored = calibrated.copy(manualWeek = 0, manualWeekMonday = "") // 恢复时不覆盖开学日
+        assertEquals(8, WeekCalc.teachingWeek(calibrated, date))
+        assertEquals(6, WeekCalc.teachingWeek(restored, date))
+        assertEquals(term, WeekCalc.termMonday(restored))
+    }
+
+    @Test
+    fun legacyOccurrenceCall_usesCalibrationAndSwapWeekForReminders() {
+        val date = LocalDate.parse("2026-10-17") // 原开学基准第六周
+        val calibrated = AppSettings(termStartDate = term.toString(), manualWeek = 8, manualWeekMonday = "2026-10-12")
+        val saturday = course(dayOfWeek = 6).copy(weekSpec = "8") // 校准应优先于旧调用参数
+        val swapped = calibrated.copy(overrides = listOf(DayOverride(date.toString(), DayKind.SWAP, 1, swapToWeek = 3)))
+        val monday = course().copy(weekSpec = "3") // 显式调休周又优先于校准
+        assertEquals(8, WeekCalc.occurrenceOn(saturday, term, calibrated, date)!!.week)
+        assertEquals(3, WeekCalc.upcoming(listOf(monday), swapped, date.atStartOfDay(), 0).single().week)
+    }
+
+    @Test
+    fun invalidOrDisabledCalibration_doesNotConfigureMissingTerm() {
+        val invalid = AppSettings(manualWeek = 6, manualWeekMonday = "bad") // 无可用基准时不排提醒
+        val disabled = AppSettings(manualWeek = 0, manualWeekMonday = "2026-10-12")
+        assertEquals(null, WeekCalc.termMonday(invalid))
+        assertEquals(null, WeekCalc.termMonday(disabled))
+        assertTrue(WeekCalc.upcoming(listOf(course()), invalid, term.atStartOfDay()).isEmpty())
+    }
+
+    @Test
+    fun mondayOf_snapsToMonday() {
+        assertEquals(term, WeekCalc.mondayOf(LocalDate.of(2026, 9, 13))) // 周日
+        assertEquals(term, WeekCalc.mondayOf(LocalDate.of(2026, 9, 7)))
+    }
+
+    @Test
+    fun weekMatches_filtersRangeAndParity() {
+        val odd = course(startWeek = 1, endWeek = 8, parity = WeekParity.ODD)
+        assertTrue(WeekCalc.weekMatches(odd, 1))
+        assertFalse(WeekCalc.weekMatches(odd, 2))
+        assertFalse(WeekCalc.weekMatches(odd, 9))
+
+        val even = course(parity = WeekParity.EVEN)
+        assertFalse(WeekCalc.weekMatches(even, 3))
+        assertTrue(WeekCalc.weekMatches(even, 4))
+    }
+
+    @Test
+    fun occurrenceOn_mapsPeriodsToClockTime() {
+        val settings = AppSettings(termStartDate = term.toString())
+        val occ = WeekCalc.occurrenceOn(course(startPeriod = 1, endPeriod = 2), term, settings, term)
+        assertNotNull(occ)
+        assertEquals(LocalDateTime.of(term, LocalTime.of(8, 0)), occ!!.start)
+        assertEquals(LocalDateTime.of(term, LocalTime.of(9, 40)), occ.end)
+        assertEquals(1, occ.week)
+    }
+
+    @Test
+    fun occurrenceOn_returnsNullOnWrongWeekday() {
+        val settings = AppSettings(termStartDate = term.toString())
+        // 课程在周二，查周一
+        val occ = WeekCalc.occurrenceOn(course(dayOfWeek = 2), term, settings, term)
+        assertEquals(null, occ)
+    }
+
+    @Test
+    fun upcoming_skipsClassesAlreadyStarted() {
+        val settings = AppSettings(termStartDate = term.toString())
+        val monday = course(id = "mon", dayOfWeek = 1)
+        val tuesday = course(id = "tue", dayOfWeek = 2)
+        val now = LocalDateTime.of(term, LocalTime.of(9, 0)) // 周一第 1 节已开始
+
+        val list = WeekCalc.upcoming(listOf(monday, tuesday), settings, now, horizonDays = 6)
+
+        assertEquals(1, list.size)
+        assertEquals("tue", list[0].course.id)
+        assertEquals(2, list[0].start.dayOfWeek.value)
+    }
+
+    @Test
+    fun parseWeeks_handlesListsAndRanges() {
+        assertEquals(setOf(15, 16), WeekCalc.parseWeeks("15,16", 20))
+        assertEquals(setOf(1, 2, 3, 4, 6, 7, 8), WeekCalc.parseWeeks("1-4,6-8", 20))
+        assertEquals(setOf(11), WeekCalc.parseWeeks("11-11", 20))
+        assertEquals(setOf(1, 3, 5), WeekCalc.parseWeeks("1-5单", 20))
+        assertEquals(setOf(2, 4, 6), WeekCalc.parseWeeks("1-6", 20).filter { it % 2 == 0 }.toSet())
+    }
+
+    @Test
+    fun weeksOf_usesSpecAndParity() {
+        val onlyLate = course().copy(weekSpec = "15,16", startWeek = 15, endWeek = 16)
+        assertTrue(WeekCalc.weekMatches(onlyLate, 15))
+        assertTrue(WeekCalc.weekMatches(onlyLate, 16))
+        assertFalse(WeekCalc.weekMatches(onlyLate, 1))
+        assertFalse(WeekCalc.weekMatches(onlyLate, 17))
+
+        val oddSpec = course().copy(weekSpec = "2-16", parity = WeekParity.ODD)
+        assertTrue(WeekCalc.weekMatches(oddSpec, 3))
+        assertFalse(WeekCalc.weekMatches(oddSpec, 4))
+    }
+
+    @Test
+    fun upcoming_onlySchedulesWeeksTheCourseRuns() {
+        // 九月七日开学，第 1 周；这门课只在第 15、16 周上
+        val settings = AppSettings(termStartDate = term.toString())
+        val late = course(dayOfWeek = 1).copy(
+            weekSpec = "15,16",
+            startWeek = 15,
+            endWeek = 16,
+        )
+        val week15Monday = term.plusWeeks(14)   // 第 15 周的周一
+        val now = LocalDateTime.of(week15Monday, LocalTime.of(7, 0))
+
+        val list = WeekCalc.upcoming(listOf(late), settings, now, horizonDays = 6)
+
+        assertEquals(1, list.size)
+        assertEquals(15, list[0].week)
+        assertEquals(week15Monday, list[0].start.toLocalDate())
+    }
+
+    @Test
+    fun holidayOverride_removesClassesThatDay() {
+        val saturday = LocalDate.of(2026, 9, 12)
+        val settings = AppSettings(
+            termStartDate = term.toString(),
+            overrides = listOf(DayOverride(saturday.toString(), DayKind.HOLIDAY)),
+        )
+        // 周六本来就没课，换成一门"周六的课"再验证
+        val satCourse = course(dayOfWeek = 6)
+        assertTrue(WeekCalc.courseOnDate(satCourse, term, AppSettings(termStartDate = term.toString()), saturday))
+        assertFalse(WeekCalc.courseOnDate(satCourse, term, settings, saturday))
+        assertEquals(null, WeekCalc.effectiveDayOfWeek(settings, saturday))
+    }
+
+    @Test
+    fun swapOverride_runsAnotherWeekdaysClasses() {
+        val saturday = LocalDate.of(2026, 9, 12)   // 周六
+        val settings = AppSettings(
+            termStartDate = term.toString(),
+            overrides = listOf(DayOverride(saturday.toString(), DayKind.SWAP, swapToDayOfWeek = 3)),
+        )
+        val wednesdayCourse = course(dayOfWeek = 3)
+        assertTrue(WeekCalc.courseOnDate(wednesdayCourse, term, settings, saturday))
+        // 周六本来该上的课这天反而不上
+        assertFalse(WeekCalc.courseOnDate(course(dayOfWeek = 6), term, settings, saturday))
+
+        val list = WeekCalc.upcoming(
+            listOf(wednesdayCourse),
+            settings,
+            LocalDateTime.of(saturday, LocalTime.of(7, 0)),
+            horizonDays = 0,
+        )
+        assertEquals(1, list.size)
+        assertEquals(saturday, list[0].start.toLocalDate())
+    }
+
+    @Test
+    fun swapWithoutArrangement_hasNoClassesUntilUserDecides() {
+        val saturday = LocalDate.of(2026, 9, 12)
+        val pending = AppSettings(
+            termStartDate = term.toString(),
+            overrides = listOf(DayOverride(saturday.toString(), DayKind.SWAP, swapToDayOfWeek = 0)),
+        )
+        assertTrue(WeekCalc.needsArrangement(pending, saturday))
+        assertEquals(null, WeekCalc.effectiveDayOfWeek(pending, saturday))
+        // 待安排 = 先不排课、不提醒
+        assertFalse(WeekCalc.courseOnDate(course(dayOfWeek = 6), term, pending, saturday))
+        assertTrue(WeekCalc.upcoming(listOf(course(dayOfWeek = 6)), pending, LocalDateTime.of(saturday, LocalTime.of(7, 0)), 0).isEmpty())
+
+        // 用户安排好之后照常上课
+        val arranged = pending.copy(
+            overrides = listOf(DayOverride(saturday.toString(), DayKind.SWAP, swapToDayOfWeek = 6))
+        )
+        assertFalse(WeekCalc.needsArrangement(arranged, saturday))
+        assertTrue(WeekCalc.courseOnDate(course(dayOfWeek = 6), term, arranged, saturday))
+    }
+
+    @Test
+    fun upcoming_respectsReminderOverride() {
+        val settings = AppSettings(termStartDate = term.toString(), defaultReminderMinutes = 20)
+        val custom = course().copy(reminderMinutes = 5)
+        assertEquals(5, WeekCalc.reminderMinutes(custom, settings))
+        assertEquals(20, WeekCalc.reminderMinutes(course(), settings))
+    }
+}

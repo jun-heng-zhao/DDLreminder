@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+app/build/
+.kotlin/
+
+# 本地环境
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 系统
+.DS_Store
+*.log
+
+# 个人课表数据（不进公开仓库）
+/docs/我的课表与作息.txt
+
+# 签名文件（绝不进仓库）
+keystore.properties
+*.jks
+*.keystore

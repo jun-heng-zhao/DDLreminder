@@ -1,0 +1,2 @@
+# 统一文本文件行尾，避免 Windows 脚本的 CRLF 被误判为空白错误
+*.bat text eol=lf
