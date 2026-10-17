@@ -2,6 +2,9 @@ package com.balance.deadlinereminder.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,26 +25,25 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,7 +52,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.balance.deadlinereminder.data.AppSettings
@@ -204,8 +209,11 @@ fun TaskScreen(
         }
 
         if (showTasks && completedTasks.isNotEmpty()) {
-            TextButton(onClick = { showCompleted = !showCompleted }) {
-                Text("已完成任务（${completedTasks.size}）${if (showCompleted) " ▲" else " ▼"}")
+            TextButton(onClick = { showCompleted = !showCompleted }, modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("已完成任务（${completedTasks.size}）", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text(if (showCompleted) "▲" else "▼")
+                }
             }
             if (showCompleted) {
                 completedTasks.forEach { task ->
@@ -252,23 +260,42 @@ private fun CompletedTaskSwipe(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val dismissState = rememberSwipeToDismissBoxState()
-    SwipeToDismissBox(
-        state = dismissState,
-        enableDismissFromStartToEnd = false,
-        enableDismissFromEndToStart = true,
-        backgroundContent = {
-            Box(
-                Modifier.fillMaxSize().padding(vertical = 4.dp).background(MaterialTheme.colorScheme.error),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                TextButton(onClick = onDelete, modifier = Modifier.padding(horizontal = 20.dp)) {
-                    Text("删除", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
+    val revealWidth = with(LocalDensity.current) { 96.dp.toPx() } // 只露出一个操作按钮，不把整张卡片滑走
+    var offsetX by remember(task.id) { mutableFloatStateOf(0f) }
+    val dragState = rememberDraggableState { delta ->
+        offsetX = (offsetX + delta).coerceIn(-revealWidth, 0f)
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .draggable(
+                state = dragState,
+                orientation = Orientation.Horizontal,
+                onDragStopped = {
+                    offsetX = if (offsetX <= -revealWidth / 2f) -revealWidth else 0f
+                },
+            ),
+    ) {
+        Box(
+            Modifier.fillMaxSize().padding(vertical = 4.dp).background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            if (offsetX < 0f) {
+                Button(
+                    onClick = onDelete,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text("删除", fontWeight = FontWeight.Bold)
                 }
             }
-        },
-    ) {
-        TaskCard(task, planFor, now, onDone, onEdit)
+        }
+        Box(Modifier.offset { IntOffset(offsetX.toInt(), 0) }) {
+            TaskCard(task, planFor, now, onDone, onEdit)
+        }
     }
 }
 
@@ -291,10 +318,10 @@ private fun TaskCard(
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
                     Text(task.title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(
                         "${if (task.done) "已完成" else "未完成"} · ${if (urgency == Urgency.URGENT) "紧急" else "不紧急"}",
@@ -303,7 +330,13 @@ private fun TaskCard(
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                Text(if (expanded) "收起" else "详情", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (task.done) {
+                    TextButton(onClick = { onDone(task.id, false) }) { Text("撤销完成") }
+                    TextButton(onClick = onEdit) { Text("编辑") }
+                } else {
+                    TextButton(onClick = { onDone(task.id, true) }) { Text("完成") }
+                    TextButton(onClick = onEdit) { Text("编辑") }
+                }
             }
 
             if (expanded) {
@@ -345,19 +378,6 @@ private fun TaskCard(
                 if (task.notes.isNotBlank()) Text("备注：${task.notes}", fontSize = 12.sp)
             }
 
-            HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalArrangement = Arrangement.spacedBy(0.dp),
-            ) {
-                if (!task.done) {
-                    TextButton(onClick = { onDone(task.id, true) }) { Text("完成") }
-                } else {
-                    TextButton(onClick = { onDone(task.id, false) }) { Text("撤销完成") }
-                }
-                TextButton(onClick = onEdit) { Text("编辑") }
-            }
         }
     }
 }

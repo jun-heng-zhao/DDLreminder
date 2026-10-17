@@ -15,8 +15,8 @@ android {
         applicationId = "com.balance.deadlinereminder"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
     }
 
     // 发布签名：keystore.properties 在仓库外，不进版本库
