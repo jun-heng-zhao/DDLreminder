@@ -3,6 +3,9 @@ package com.balance.deadlinereminder.data
 /** 单双周过滤方式。 */
 enum class WeekParity { ALL, ODD, EVEN }
 
+/** 应用配色模式；默认跟随系统。 */
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
 /**
  * 一条课程安排。星期与节次都是一次课的固定位置，周次决定它在哪些周出现。
  */
@@ -19,6 +22,8 @@ data class Course(
     val parity: WeekParity = WeekParity.ALL,
     val reminderMinutes: Int = -1, // -1 表示跟随全局默认
     val colorIndex: Int = 0,
+    /** 0=低 1=中 2=高，用于课程卡颜色。 */
+    val importance: Int = 1,
     /**
      * 不规则周次，例如 "15,16" 或 "1-4,6-8" 或 "1-16双"。
      * 非空时以它为准（有些课只在第 15、16 周上，光靠起止周表达不了）。
@@ -92,6 +97,9 @@ data class AppSettings(
     val wakeMinute: Int = 8 * 60,               // 每天几点开始可用（当天第几分钟）
     val sleepMinute: Int = 23 * 60,             // 每天几点之后不排活
     val dailyCapMinutes: Int = 180,             // 每天最多安排多少分钟（防止把 15 小时都当空闲）
+    val commuteMinutes: Int = 60,               // 每天通勤时间，默认 1 小时
+    val mealMinutes: Int = 120,                 // 每天饮食时间，默认 2 小时
+    val sleepMinutes: Int = 540,                // 每天睡眠时间，默认 9 小时
     val focusChunkMinutes: Int = 60,            // 单次专注时长，排程按它切块
     val breakMinutes: Int = 10,                 // 两块之间的休息
     val minSlotMinutes: Int = 20,               // 短于这个长度的空档不排
@@ -100,6 +108,7 @@ data class AppSettings(
     val ddlUrgentHours: Int = 3,                // 提前多少小时紧急提醒
     val digestEnabled: Boolean = true,          // 每天早上播报今天的安排
     val digestMinute: Int = 7 * 60 + 30,        // 播报时间
+    val themeMode: ThemeMode = ThemeMode.SYSTEM, // 跟随系统、浅色或深色
 ) {
     /** 一天的可支配窗口；睡觉时间早于起床时间时按"至少半小时"兜底。 */
     val workWindowStart: Int get() = wakeMinute.coerceIn(0, 1439)

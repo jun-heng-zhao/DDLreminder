@@ -4,6 +4,8 @@ import com.balance.deadlinereminder.data.AppSettings
 import com.balance.deadlinereminder.data.Course
 import com.balance.deadlinereminder.data.PeriodTime
 import com.balance.deadlinereminder.data.Task
+import com.balance.deadlinereminder.data.Urgency
+import com.balance.deadlinereminder.data.urgencyFor
 import com.balance.deadlinereminder.domain.Feasibility
 import com.balance.deadlinereminder.domain.PlanEngine
 import org.junit.Assert.assertEquals
@@ -85,6 +87,28 @@ class PlanEngineTest {
             monday.plusDays(2).atTime(23, 0),
         )
         assertEquals(360, slots.sumOf { it.minutes }) // 三天各 120
+    }
+
+    @Test
+    fun `每天自动扣除通勤饮食与九小时睡眠`() {
+        val allDay = settings(dailyCapMinutes = 1440).copy(
+            wakeMinute = 0,
+            sleepMinute = 1440,
+            commuteMinutes = 60,
+            mealMinutes = 120,
+            sleepMinutes = 540,
+        )
+        val slots = PlanEngine.freeSlots(allDay, emptyList(), monday.atStartOfDay(), monday.plusDays(1).atStartOfDay())
+        assertEquals(720, slots.sumOf { it.minutes })
+    }
+
+    @Test
+    fun `空闲倍率按五倍三倍边界分级`() {
+        val sample = task("ratio", 60, monday.atTime(23, 0).toString())
+        assertEquals(Urgency.RELAXED, urgencyFor(300, sample))
+        assertEquals(Urgency.ATTENTION, urgencyFor(180, sample))
+        assertEquals(Urgency.ATTENTION, urgencyFor(299, sample))
+        assertEquals(Urgency.URGENT, urgencyFor(179, sample))
     }
 
     @Test

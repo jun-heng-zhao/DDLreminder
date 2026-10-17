@@ -40,6 +40,10 @@ object Codec {
                 s.ddlUrgentHours.toString(),
                 if (s.digestEnabled) "1" else "0",
                 s.digestMinute.toString(),
+                s.commuteMinutes.toString(),
+                s.mealMinutes.toString(),
+                s.sleepMinutes.toString(),
+                s.themeMode.name,
             ).joinToString("\t")
         )
         s.periods.forEach { p ->
@@ -61,6 +65,7 @@ object Codec {
                     c.dayOfWeek.toString(), c.startPeriod.toString(), c.endPeriod.toString(),
                     c.startWeek.toString(), c.endWeek.toString(), c.parity.name,
                     c.reminderMinutes.toString(), c.colorIndex.toString(), esc(c.weekSpec),
+                    c.importance.toString(),
                 ).joinToString("\t")
             )
         }
@@ -72,6 +77,7 @@ object Codec {
                     t.estimateMinutes.toString(), t.spentMinutes.toString(), esc(t.deadline),
                     t.priority.toString(), esc(t.notes), if (t.done) "1" else "0",
                     esc(t.createdAt), t.chunkMinutes.toString(),
+                    if (t.daily) "1" else "0", esc(t.completedOn),
                 ).joinToString("\t")
             )
         }
@@ -110,6 +116,11 @@ object Codec {
                         ddlUrgentHours = (f.getOrNull(15)?.toIntOrNull() ?: settings.ddlUrgentHours).coerceIn(1, 168),
                         digestEnabled = f.getOrNull(16)?.let { it == "1" } ?: settings.digestEnabled,
                         digestMinute = (f.getOrNull(17)?.toIntOrNull() ?: settings.digestMinute).coerceIn(0, 1439),
+                        commuteMinutes = (f.getOrNull(18)?.toIntOrNull() ?: settings.commuteMinutes).coerceIn(0, 1440),
+                        mealMinutes = (f.getOrNull(19)?.toIntOrNull() ?: settings.mealMinutes).coerceIn(0, 1440),
+                        sleepMinutes = (f.getOrNull(20)?.toIntOrNull() ?: settings.sleepMinutes).coerceIn(0, 1440),
+                        themeMode = runCatching { ThemeMode.valueOf(f.getOrNull(21).orEmpty()) }
+                            .getOrDefault(ThemeMode.SYSTEM),
                     )
                 }
                 "P" -> {
@@ -147,6 +158,7 @@ object Codec {
                         reminderMinutes = f.getOrNull(11)?.toIntOrNull() ?: -1,
                         colorIndex = f.getOrNull(12)?.toIntOrNull() ?: 0,
                         weekSpec = unesc(f.getOrNull(13).orEmpty()),
+                        importance = (f.getOrNull(14)?.toIntOrNull() ?: 1).coerceIn(0, 2),
                     )
                 }
                 "T" -> {
@@ -164,6 +176,8 @@ object Codec {
                         done = f.getOrNull(9) == "1",
                         createdAt = unesc(f.getOrNull(10).orEmpty()),
                         chunkMinutes = f.getOrNull(11)?.toIntOrNull() ?: -1,
+                        daily = f.getOrNull(12) == "1",
+                        completedOn = unesc(f.getOrNull(13).orEmpty()),
                     )
                 }
             }

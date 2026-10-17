@@ -307,6 +307,7 @@ fun ImportScreen(
             EditCourseDialog(
                 course = course,
                 title = "修改识别结果",
+                totalWeeks = settings.totalWeeks,
                 onDismiss = { editingIndex = null },
                 onSave = { updated ->
                     drafts = drafts.toMutableList().also { it[index] = updated }

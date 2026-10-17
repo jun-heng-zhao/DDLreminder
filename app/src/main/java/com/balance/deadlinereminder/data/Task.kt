@@ -29,6 +29,10 @@ data class Task(
     val createdAt: String = "",
     /** 单个任务一次最多安排多久；-1 表示跟随全局"单次专注时长"。 */
     val chunkMinutes: Int = -1,
+    /** 每日任务每天重新出现，完成状态只对当天有效。 */
+    val daily: Boolean = false,
+    /** 每日任务最近一次完成日期，格式 yyyy-MM-dd。 */
+    val completedOn: String = "",
 ) {
     /** 还没投入的时间；已投入超过预估时为 0。 */
     val remainingMinutes: Int get() = (estimateMinutes - spentMinutes).coerceAtLeast(0)
@@ -64,6 +68,19 @@ fun parseDateTime(text: String): LocalDateTime? {
 
 /** 中文优先级名。 */
 val PRIORITY_NAMES = listOf("低", "中", "高")
+
+/** 按可用空闲时间与剩余工作量的倍率判断任务紧急程度。 */
+enum class Urgency { RELAXED, ATTENTION, URGENT }
+
+fun urgencyFor(freeMinutes: Int, task: Task): Urgency {
+    if (task.remainingMinutes <= 0) return Urgency.RELAXED
+    val ratio = freeMinutes.toFloat() / task.remainingMinutes.toFloat()
+    return when {
+        ratio >= 5f -> Urgency.RELAXED
+        ratio >= 3f -> Urgency.ATTENTION
+        else -> Urgency.URGENT
+    }
+}
 
 fun priorityName(priority: Int): String = PRIORITY_NAMES.getOrElse(priority) { "中" }
 

@@ -49,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.balance.deadlinereminder.data.AppSettings
-import com.balance.deadlinereminder.data.BuiltInHolidays
 import com.balance.deadlinereminder.data.Course
 import com.balance.deadlinereminder.data.DAY_NAMES
 import com.balance.deadlinereminder.data.DayKind
@@ -96,10 +95,6 @@ fun CalendarScreen(
     var calendarError by remember(queryFrom, queryTo) { mutableStateOf("") }
     var queryRequest by remember { mutableStateOf(0) }
     var importAfterQuery by remember(queryFrom, queryTo) { mutableStateOf(false) }
-    val phoneCalendarEmpty = phoneEvents?.isEmpty() == true
-    val pendingFromPhone = remember(phoneEvents, settings.overrides) {
-        phoneEvents.orEmpty().filter { event -> settings.overrides.none { it.date == event.date.toString() } }
-    }
     // 提醒偏好、导入弹窗及加载状态变化都不影响整月课程，避免重复解析课程周次。
     val monthCourses = remember(month, courses, termStartDate, settings.periods, settings.overrides) {
         (1..month.lengthOfMonth()).associate { day ->
@@ -110,8 +105,7 @@ fun CalendarScreen(
 
     fun applyHolidays(events: List<DeviceCalendar.HolidayEvent>) {
         if (events.isEmpty()) {
-            importMessage = "手机日历里没有节假日事件。系统日历要先订阅「中国法定节假日」（日历 App → 设置 → 节假日）；" +
-                "不想订阅就用「内置 2026 安排」，或者直接点日期手动标。"
+            importMessage = "手机日历中没有可导入的节假日"
             return
         }
         holidayRows = events.map { event ->
@@ -138,7 +132,7 @@ fun CalendarScreen(
         if (granted) queryRequest++
         else {
             importAfterQuery = false
-            importMessage = "没给日历权限，读不到系统日历里的节假日；也可以手动标或用内置安排。"
+            importMessage = "未授予日历读取权限"
         }
     }
 
@@ -174,29 +168,6 @@ fun CalendarScreen(
             calendarLoading = false
             importAfterQuery = false
         }
-    }
-
-    fun applyBuiltInArrangement() {
-        val entries = BuiltInHolidays.entriesForTerm(termStartDate, settings.totalWeeks)
-        if (entries.isEmpty()) {
-            importMessage = "这个学期范围内没有内置的法定节假日"
-            return
-        }
-        holidayRows = entries.map { entry ->
-            HolidayRow(
-                event = DeviceCalendar.HolidayEvent(
-                    date = LocalDate.parse(entry.date),
-                    title = entry.note,
-                    calendarName = "内置：2026 年国务院放假安排",
-                    isWorkday = entry.kind == DayKind.SWAP,
-                ),
-                selected = true,
-                kind = entry.kind,
-                swapToDayOfWeek = entry.swapToDayOfWeek,
-                swapToWeek = WeekCalc.teachingWeek(settings, LocalDate.parse(entry.date)),
-            )
-        }
-        importMessage = ""
     }
 
     fun putOverride(date: LocalDate, kind: DayKind, swapTo: Int, note: String, swapWeek: Int) {
@@ -261,7 +232,7 @@ fun CalendarScreen(
                         override?.kind == DayKind.SWAP -> COLOR_SWAP
                         vacation -> COLOR_VACATION
                         classes.isNotEmpty() -> COLOR_CLASS
-                        else -> Color.White
+                        else -> MaterialTheme.colorScheme.surface
                     }
                     Column(
                         Modifier
@@ -300,40 +271,6 @@ fun CalendarScreen(
             }
         }
 
-        if (phoneCalendarEmpty && settings.overrides.none { it.kind == DayKind.HOLIDAY }) {
-            Card(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Column(Modifier.padding(10.dp)) {
-                    Text("系统日历里没有节假日数据", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "MIUI 把法定节假日放在自家日历 App 里，第三方应用通过 CalendarContract 读不到。" +
-                            "用内置的 2026 年国务院放假安排一键铺上，放假标红、调休上班日先留空。",
-                        fontSize = 11.sp,
-                    )
-                    Button(
-                        onClick = { applyBuiltInArrangement() },
-                        modifier = Modifier.padding(top = 4.dp),
-                    ) { Text("应用内置 2026 安排") }
-                }
-            }
-        }
-
-        if (pendingFromPhone.isNotEmpty()) {
-            Card(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Column(Modifier.padding(10.dp)) {
-                    Text(
-                        "手机日历里有 ${pendingFromPhone.size} 天节假日（${pendingFromPhone.first().calendarName}）",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text("放假的日子标红；标「班」的日子先留空，之后你自己安排上哪天的课。", fontSize = 11.sp)
-                    Button(
-                        onClick = { applyHolidays(pendingFromPhone) },
-                        modifier = Modifier.padding(top = 4.dp),
-                    ) { Text("应用这些节假日") }
-                }
-            }
-        }
-
         if (calendarLoading) {
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             Text(if (phoneEvents == null) "正在读取系统日历…" else "正在刷新系统日历…", fontSize = 11.sp)
@@ -345,60 +282,12 @@ fun CalendarScreen(
             Button(onClick = { ensurePermissionThenQuery() }, enabled = !calendarLoading) {
                 Text(if (phoneEvents == null) "从手机日历导入" else "刷新并导入手机日历")
             }
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = { applyBuiltInArrangement() }) { Text("内置 2026 安排") }
         }
         if (importMessage.isNotBlank()) {
             Text(importMessage, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
         }
 
-        Text(
-            "颜色：蓝=有课，红=放假，橙=调休（上班日先「待安排」，点进去选上哪天的课），灰=学期外（寒暑假），深蓝框=今天。",
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-
-        if (settings.overrides.isNotEmpty()) {
-            Card(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Column(Modifier.padding(10.dp)) {
-                    Text("已设置的调休（${settings.overrides.size} 天）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    settings.overrides.forEach { o ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                buildString {
-                                    append(o.date)
-                                    when (o.kind) {
-                                        DayKind.HOLIDAY -> append(" 放假")
-                                        DayKind.SWAP -> {
-                                            if (o.swapToDayOfWeek !in 1..7) {
-                                                append(" 调休（待安排上哪天的课）")
-                                            } else {
-                                                append(" 上")
-                                                if (o.swapToWeek > 0) append("第").append(o.swapToWeek).append("周")
-                                                append(dayName(o.swapToDayOfWeek)).append("的课")
-                                            }
-                                        }
-                                        DayKind.NORMAL -> append(" 正常")
-                                    }
-                                    if (o.note.isNotBlank()) append("（").append(o.note).append("）")
-                                },
-                                fontSize = 12.sp,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = {
-                                onChange(settings.copy(overrides = settings.overrides.filterNot { it.date == o.date }))
-                            }) { Text("删除", fontSize = 12.sp) }
-                        }
-                    }
-                }
-            }
-        }
-
-        Text(
-            "寒暑假不用手标：第一周之前、最后一周之后的日期自动按学生假期显示（灰）。",
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
-        )
+        Spacer(Modifier.heightIn(min = 8.dp))
     }
 
     editingDate?.takeIf { active }?.let { date ->
@@ -472,7 +361,6 @@ private fun HolidayImportDialog(
                     .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("勾选要应用的。标「班」的日子默认「待安排」，之后在日历页点那天再定上哪天的课。", fontSize = 11.sp)
                 rows.forEachIndexed { index, row ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

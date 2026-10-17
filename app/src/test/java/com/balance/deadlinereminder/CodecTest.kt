@@ -7,6 +7,7 @@ import com.balance.deadlinereminder.data.DayKind
 import com.balance.deadlinereminder.data.DayOverride
 import com.balance.deadlinereminder.data.ScheduleData
 import com.balance.deadlinereminder.data.Task
+import com.balance.deadlinereminder.data.ThemeMode
 import com.balance.deadlinereminder.data.WeekParity
 import com.balance.deadlinereminder.data.defaultPeriods
 import org.junit.Assert.assertEquals
@@ -41,6 +42,8 @@ class CodecTest {
         done = false,
         createdAt = "2026-10-15T10:00",
         chunkMinutes = 45,
+        daily = true,
+        completedOn = "2026-10-17",
     )
 
     private val settings = AppSettings(
@@ -92,6 +95,13 @@ class CodecTest {
         assertEquals(6, decoded.ddlUrgentHours)
         assertEquals(false, decoded.digestEnabled)
         assertEquals(8 * 60, decoded.digestMinute)
+    }
+
+    @Test
+    fun 主题模式落盘且旧备份默认跟随系统() {
+        val dark = settings.copy(themeMode = ThemeMode.DARK)
+        assertEquals(ThemeMode.DARK, Codec.decode(Codec.encode(ScheduleData(settings = dark))).settings.themeMode)
+        assertEquals(ThemeMode.SYSTEM, Codec.decode("v2\nS\t2026-09-07\t20\t20\t0").settings.themeMode)
     }
 
     @Test

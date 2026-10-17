@@ -53,6 +53,8 @@ data class TaskPlan(
     val blocks: List<WorkBlock>,
     /** 空档里已经排进去的分钟数；排不下时会小于 [remainingMinutes]。 */
     val plannedMinutes: Int,
+    /** 从现在到截止前，在课程与每日扣除项之后剩余的可用分钟数。 */
+    val availableMinutes: Int,
     /** 全部做完的时刻；排不下时为 null。 */
     val finishAt: LocalDateTime?,
     /** 截止时间减去 [finishAt]，正数=富余，负数=来不及。 */
@@ -61,6 +63,12 @@ data class TaskPlan(
 ) {
     val firstBlock: WorkBlock? get() = blocks.firstOrNull()
     val shortfallMinutes: Int get() = (remainingMinutes - plannedMinutes).coerceAtLeast(0)
+
+    /** 截止前可用空档相对剩余工作量的倍率；无截止时间时没有可比较的窗口。 */
+    val freeTimeRatio: Float?
+        get() = if (remainingMinutes > 0 && deadline != null) {
+            availableMinutes.toFloat() / remainingMinutes
+        } else null
 }
 
 /** 一份完整的排程：把任务摊到课程之间的空档上。 */
@@ -182,7 +190,10 @@ object PlanEngine {
                 slack != null && slack < tightThreshold(task) -> Feasibility.TIGHT
                 else -> Feasibility.COMFORTABLE
             }
-            TaskPlan(task, deadline, task.remainingMinutes, taskBlocks, planned, finishAt, slack, feasibility)
+            val available = deadline?.takeIf { it.isAfter(now) }?.let {
+                freeSlots(settings, courses, now, minOf(it, planUntil)).sumOf(TimeRange::minutes)
+            } ?: 0
+            TaskPlan(task, deadline, task.remainingMinutes, taskBlocks, planned, available, finishAt, slack, feasibility)
         }
 
         return Plan(
@@ -231,7 +242,11 @@ object PlanEngine {
         to: LocalDateTime,
     ): List<TimeRange> {
         val windowStart = date.atTime(minutesToTime(settings.workWindowStart))
-        val windowEnd = date.atTime(minutesToTime(settings.workWindowEnd))
+        val windowEnd = if (settings.workWindowEnd >= 1440) {
+            date.plusDays(1).atStartOfDay()
+        } else {
+            date.atTime(minutesToTime(settings.workWindowEnd))
+        }
         var cursor = maxOf(windowStart, from)
         val hardEnd = minOf(windowEnd, to)
         if (!cursor.isBefore(hardEnd)) return emptyList()
@@ -246,9 +261,12 @@ object PlanEngine {
         }
         if (cursor.isBefore(hardEnd)) gaps += TimeRange(cursor, hardEnd)
 
+        // 每日先扣除通勤、饮食和睡眠，再应用可用于任务的每日上限。
+        val unavailable = (settings.commuteMinutes + settings.mealMinutes + settings.sleepMinutes).coerceAtLeast(0)
+        val availableBudget = (1440 - unavailable).coerceAtLeast(0)
         // 每日上限：从当天最早的空档开始累计，超出部分直接砍掉
         val capped = mutableListOf<TimeRange>()
-        var budget = settings.dailyCapMinutes
+        var budget = minOf(settings.dailyCapMinutes, availableBudget)
         for (gap in gaps) {
             if (budget <= 0) break
             val take = minOf(gap.minutes, budget)

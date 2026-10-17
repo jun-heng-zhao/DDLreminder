@@ -2,6 +2,7 @@ package com.balance.deadlinereminder.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,6 +35,7 @@ import com.balance.deadlinereminder.domain.WeekCalc
 fun EditCourseDialog(
     course: Course,
     title: String,
+    totalWeeks: Int = 20,
     onDismiss: () -> Unit,
     onSave: (Course) -> Unit,
     onDelete: ((Course) -> Unit)?,
@@ -48,6 +50,11 @@ fun EditCourseDialog(
     var endWeek by remember(course.id) { mutableStateOf(course.endWeek.toString()) }
     var parity by remember(course.id) { mutableStateOf(course.parity) }
     var weekSpec by remember(course.id) { mutableStateOf(course.weekSpec) }
+    var irregular by remember(course.id) { mutableStateOf(course.weekSpec.isNotBlank()) }
+    var selectedWeeks by remember(course.id) {
+        mutableStateOf(WeekCalc.parseWeeks(course.weekSpec, totalWeeks).toSet())
+    }
+    var importance by remember(course.id) { mutableIntStateOf(course.importance) }
     var remind by remember(course.id) { mutableStateOf(course.reminderMinutes.toString()) }
 
     AlertDialog(
@@ -128,16 +135,21 @@ fun EditCourseDialog(
                         modifier = Modifier.weight(1f),
                     )
                 }
-
-                OutlinedTextField(
-                    value = weekSpec,
-                    onValueChange = { weekSpec = it },
-                    label = { Text("周次（不规则时填，如 15,16 或 1-4,6-8）") },
-                    supportingText = { Text("只在第 15、16 周上的课就填 15,16；留空则用上面的起止周", fontSize = 10.sp) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                )
-
+                Text("周次规则", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Row {
+                    FilterChip(
+                        selected = !irregular,
+                        onClick = { irregular = false },
+                        label = { Text("规则") },
+                        modifier = Modifier.padding(end = 4.dp),
+                    )
+                    FilterChip(
+                        selected = irregular,
+                        onClick = { irregular = true },
+                        label = { Text("不规则") },
+                    )
+                }
+                if (!irregular) {
                 Text("单双周", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                 Row {
                     FilterChip(
@@ -158,6 +170,35 @@ fun EditCourseDialog(
                         label = { Text("双周") },
                     )
                 }
+                } else {
+                    Text("点击选择上课周数", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                    FlowRow(Modifier.fillMaxWidth()) {
+                        (1..totalWeeks.coerceIn(1, 60)).forEach { week ->
+                            FilterChip(
+                                selected = week in selectedWeeks,
+                                onClick = {
+                                    selectedWeeks = selectedWeeks.toMutableSet().also {
+                                        if (!it.add(week)) it.remove(week)
+                                    }
+                                },
+                                label = { Text(week.toString()) },
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        }
+                    }
+                }
+
+                Text("课程重要性（决定课程颜色）", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Row {
+                    listOf("低", "中", "高").forEachIndexed { index, label ->
+                        FilterChip(
+                            selected = importance == index,
+                            onClick = { importance = index },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(end = 4.dp),
+                        )
+                    }
+                }
 
                 OutlinedTextField(
                     value = remind,
@@ -174,7 +215,7 @@ fun EditCourseDialog(
                 val ep = (endPeriod.toIntOrNull() ?: sp).coerceAtLeast(sp)
                 var sw = (startWeek.toIntOrNull() ?: 1).coerceAtLeast(1)
                 var ew = (endWeek.toIntOrNull() ?: sw).coerceAtLeast(sw)
-                val spec = weekSpec.trim()
+                val spec = if (irregular) selectedWeeks.sorted().joinToString(",") else ""
                 if (spec.isNotEmpty()) {
                     val weeks = WeekCalc.parseWeeks(spec, 30)
                     if (weeks.isNotEmpty()) {
@@ -195,6 +236,7 @@ fun EditCourseDialog(
                         parity = parity,
                         reminderMinutes = remind.trim().toIntOrNull() ?: -1,
                         weekSpec = spec,
+                        importance = importance,
                     )
                 )
             }) { Text("保存") }

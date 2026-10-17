@@ -2,6 +2,7 @@ package com.balance.deadlinereminder.data
 
 import android.content.Context
 import java.io.File
+import java.time.LocalDate
 
 /**
  * 仓库：内存态 + 一个文本文件。数据量极小（几十条课、几十条任务），不需要数据库。
@@ -26,6 +27,7 @@ class Store private constructor(private val appContext: Context) {
 
     init {
         load()
+        refreshDailyTasks()
     }
 
     private fun load() {
@@ -119,12 +121,28 @@ class Store private constructor(private val appContext: Context) {
     }
 
     fun setTaskDone(taskId: String, done: Boolean): List<Task> {
+        val today = LocalDate.now().toString()
         val next = tasks.map { task ->
             if (task.id != taskId) task
-            else if (done) task.copy(done = true, spentMinutes = maxOf(task.spentMinutes, task.estimateMinutes))
-            else task.copy(done = false, spentMinutes = 0)
+            else if (done) task.copy(
+                done = true,
+                spentMinutes = maxOf(task.spentMinutes, task.estimateMinutes),
+                completedOn = if (task.daily) today else task.completedOn,
+            )
+            else task.copy(done = false, spentMinutes = 0, completedOn = if (task.daily) "" else task.completedOn)
         }
         update(tasks = next)
+        return next
+    }
+
+    /** 跨日后重置每日任务，使昨天完成的任务今天重新出现。 */
+    fun refreshDailyTasks(today: LocalDate = LocalDate.now()): List<Task> {
+        val date = today.toString()
+        val next = tasks.map { task ->
+            if (task.daily && task.done && task.completedOn != date) task.copy(done = false, spentMinutes = 0)
+            else task
+        }
+        if (next != tasks) update(tasks = next)
         return next
     }
 

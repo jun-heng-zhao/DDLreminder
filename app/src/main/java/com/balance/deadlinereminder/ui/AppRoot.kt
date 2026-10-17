@@ -33,6 +33,7 @@ import com.balance.deadlinereminder.data.AppSettings
 import com.balance.deadlinereminder.data.Course
 import com.balance.deadlinereminder.data.Store
 import com.balance.deadlinereminder.data.Task
+import com.balance.deadlinereminder.data.ThemeMode
 import com.balance.deadlinereminder.domain.PlanEngine
 import com.balance.deadlinereminder.domain.WeekCalc
 import com.balance.deadlinereminder.remind.Notifier
@@ -44,7 +45,7 @@ import java.time.LocalDateTime
 import java.util.UUID
 
 @Composable
-fun AppRoot() {
+fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
     val context = LocalContext.current
     val store = remember { Store.get(context) }
     val lifecycleOwner = LocalLifecycleOwner.current // 仅在前台恢复与检查日期
@@ -59,6 +60,7 @@ fun AppRoot() {
     var weekOffset by remember { mutableIntStateOf(0) }
     var editing by remember { mutableStateOf<Course?>(null) }
     var newSlot by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var settingsSecondaryPage by remember { mutableStateOf(false) } // 二级设置页自行处理右滑返回
     var today by remember { mutableStateOf(LocalDate.now()) } // 跨日后触发今日课程与周数重算
     var planRefresh by remember { mutableIntStateOf(0) }     // 隔几分钟重排一次，时间推移不会让"预计做完"变旧
 
@@ -67,6 +69,7 @@ fun AppRoot() {
         courses = newCourses
         settings = newSettings
         store.update(newCourses, newSettings)
+        onThemeModeChange(newSettings.themeMode)
         ReminderScheduler.reschedule(context)
     }
 
@@ -94,6 +97,7 @@ fun AppRoot() {
                 val date = LocalDate.now() // 使用当前时区，避免跨日后仍显示昨天
                 if (date != today) {
                     today = date
+                    tasks = store.refreshDailyTasks(date)
                     ReminderScheduler.reschedule(context)
                 }
                 ticks++
@@ -137,27 +141,20 @@ fun AppRoot() {
         HorizontalPager(
             state = pager,
             beyondViewportPageCount = 1,
+            userScrollEnabled = !(tab == 2 && settingsSecondaryPage),
             modifier = Modifier.padding(padding),
         ) { page ->
             when (page) {
                 0 -> Column(modifier = Modifier.fillMaxSize()) {
-                    ScheduleScreen(
+                    TaskScreen(
+                        tasks = tasks,
                         courses = courses,
                         settings = settings,
-                        week = shownWeek,
-                        currentWeek = currentWeek,
-                        onWeekOffset = { weekOffset += it },
-                        onBackToNow = { weekOffset = 0 },
-                        onAddAt = { day, period -> newSlot = day to period },
-                        onEdit = { editing = it },
-                        today = today,
-                        tasks = tasks,
                         plan = plan,
-                        onRegisterProgress = { taskId, minutes -> persistTasks(store.addSpent(taskId, minutes)) },
-                        onTaskSave = { persistTasks(store.upsertTask(it)) },
-                        onTaskDelete = { persistTasks(store.deleteTask(it)) },
-                        onTaskProgress = { taskId, minutes -> persistTasks(store.addSpent(taskId, minutes)) },
-                        onTaskDone = { taskId, done -> persistTasks(store.setTaskDone(taskId, done)) },
+                        onSave = { persistTasks(store.upsertTask(it)) },
+                        onDelete = { persistTasks(store.deleteTask(it)) },
+                        onDone = { taskId, done -> persistTasks(store.setTaskDone(taskId, done)) },
+                        onAddCourse = { newSlot = 1 to 1 },
                     )
                 }
 
@@ -178,6 +175,19 @@ fun AppRoot() {
                         openPage(0)
                     },
                     onChange = { persist(newSettings = it) },
+                    onSecondaryPageChange = { settingsSecondaryPage = it },
+                    timetable = {
+                        CourseSettingsScreen(
+                            courses = courses,
+                            settings = settings,
+                            week = shownWeek,
+                            currentWeek = currentWeek,
+                            onWeekOffset = { weekOffset += it },
+                            onBackToNow = { weekOffset = 0 },
+                            onAdd = { newSlot = 1 to 1 },
+                            onEdit = { editing = it },
+                        )
+                    },
                     onRestore = {
                         courses = store.courses
                         settings = store.settings
@@ -204,6 +214,7 @@ fun AppRoot() {
                 reminderMinutes = -1,
             ),
             title = "添加课程",
+            totalWeeks = settings.totalWeeks,
             onDismiss = { newSlot = null },
             onSave = { saved ->
                 persist(newCourses = courses.filterNot { it.id == saved.id } + saved)
@@ -217,6 +228,7 @@ fun AppRoot() {
         EditCourseDialog(
             course = course,
             title = "编辑课程",
+            totalWeeks = settings.totalWeeks,
             onDismiss = { editing = null },
             onSave = { saved ->
                 val next = courses.map { if (it.id == saved.id) saved else it } // 保留顺序，无改动时不写盘

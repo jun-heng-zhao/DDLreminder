@@ -268,7 +268,6 @@ fun ScheduleScreen(
     if (creatingTask || editingTask != null) {
         TaskEditDialog(
             task = editingTask,
-            courses = courses,
             settings = settings,
             onDismiss = { creatingTask = false; editingTask = null },
             onSave = { task ->
@@ -340,7 +339,15 @@ private fun TodayPlanCard(
                     Feasibility.DONE -> "「${taskPlan.task.title}」已完成"
                     else -> "「${taskPlan.task.title}」预计 ${taskPlan.finishAt?.format(stamp)} 做完 · ${countdownLabel(taskPlan.deadline, now)}"
                 }
-                Text(line, fontSize = 12.sp, color = if (taskPlan.feasibility == Feasibility.IMPOSSIBLE || taskPlan.feasibility == Feasibility.OVERDUE) Color(0xFFC62828) else Color(0xFF37474F))
+                Text(
+                    line,
+                    fontSize = 12.sp,
+                    color = if (taskPlan.feasibility == Feasibility.IMPOSSIBLE || taskPlan.feasibility == Feasibility.OVERDUE) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
             }
 
             TextButton(onClick = onOpenTasks) { Text("＋ 记一件事 / 查看全部任务") }

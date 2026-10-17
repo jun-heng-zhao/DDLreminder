@@ -16,10 +16,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,12 +33,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -43,6 +49,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.balance.deadlinereminder.data.AppSettings
 import com.balance.deadlinereminder.data.Course
 import com.balance.deadlinereminder.data.PeriodTime
+import com.balance.deadlinereminder.data.ThemeMode
 import com.balance.deadlinereminder.data.humanDuration
 import com.balance.deadlinereminder.domain.WeekCalc
 import java.time.LocalDate
@@ -56,6 +63,8 @@ fun SettingsScreen(
     onRestore: (() -> Unit)? = null,
     active: Boolean = true,
     onImportCourses: (List<Course>) -> Unit = {},
+    timetable: @Composable () -> Unit = {},
+    onSecondaryPageChange: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     var secondaryPage by rememberSaveable { mutableStateOf("") } // 设置次页，不改变主导航页码
@@ -73,16 +82,24 @@ fun SettingsScreen(
     }
     var scheduleDraft by remember(settings) { mutableStateOf(settings) } // DDL 排程草稿，保存按钮统一提交
     var dataMessage by remember { mutableStateOf("") }
+    var wheelSetting by remember { mutableStateOf<WheelSetting?>(null) } // 当前打开的数字滚轮
+    var clockSetting by remember { mutableStateOf<ClockSetting?>(null) } // 当前打开的时钟双滚轮
+    var editingPeriod by remember { mutableStateOf<Pair<Int, Boolean>?>(null) } // 节次索引与是否编辑开始时间
     val notificationsOn = NotificationManagerCompat.from(context).areNotificationsEnabled()
     val exactAlarmOn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: false
     } else true
 
     BackHandler(enabled = active && secondaryPage.isNotBlank()) { secondaryPage = "" }
+    fun closeSecondaryPage() { secondaryPage = "" }
+
+    androidx.compose.runtime.LaunchedEffect(secondaryPage) {
+        onSecondaryPageChange(secondaryPage.isNotBlank())
+    }
 
     if (secondaryPage == "图片导入") {
-        Column(Modifier.fillMaxSize().padding(12.dp)) {
-            TextButton(onClick = { secondaryPage = "" }) { Text("返回设置") }
+        Column(Modifier.fillMaxSize().swipeRightToBack(onBack = ::closeSecondaryPage).padding(12.dp)) {
+            TextButton(onClick = ::closeSecondaryPage) { Text("返回设置") }
             ImportScreen(
                 settings = settings,
                 onImportCourses = { imported ->
@@ -97,42 +114,43 @@ fun SettingsScreen(
         }
         return
     }
+    if (secondaryPage == "课表") {
+        Column(Modifier.fillMaxSize().swipeRightToBack(onBack = ::closeSecondaryPage).padding(12.dp)) {
+            TextButton(onClick = ::closeSecondaryPage) { Text("返回设置") }
+            timetable()
+        }
+        return
+    }
 
     Column(
         Modifier
             .fillMaxSize()
+            .swipeRightToBack(enabled = secondaryPage.isNotBlank(), onBack = ::closeSecondaryPage)
             .verticalScroll(rememberScrollState())
             .padding(12.dp)
     ) {
         Text(secondaryPage.ifBlank { "设置" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text(
-            "输入、开关与步进只改草稿；「保存设置」提交全部分类草稿，「全部撤销」取消全部草稿。图片导入与备份恢复点击应用后立即生效。",
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-        )
         if (secondaryPage.isBlank()) {
             listOf(
-                "学期与作息" to "教学周校准、上课时间与课程提醒",
-                "任务排程" to "每日工作量、专注休息、DDL 预警与播报",
-                "图片导入" to "课表、作息时间与校历，本地识别后核对",
-                "数据备份" to "导出或恢复课程、设置和 DDL 任务",
-                "提醒权限" to "通知、精确闹钟与 HyperOS 后台权限",
-            ).forEach { (title, hint) ->
+                "课表",
+                "学期与作息",
+                "任务",
+                "外观",
+                "图片导入",
+                "数据备份",
+                "提醒权限",
+            ).forEach { title ->
                 Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     TextButton(onClick = { secondaryPage = title }, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                            Text(title, style = MaterialTheme.typography.titleMedium)
-                            Text(hint, style = MaterialTheme.typography.bodySmall)
-                        }
+                        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.fillMaxWidth().padding(8.dp))
                     }
                 }
             }
-            Text("已有 ${courses.size} 门课 · 数据仅保存在本机", style = MaterialTheme.typography.bodySmall)
             return@Column
         }
         Row {
             TextButton(onClick = { secondaryPage = "" }) { Text("返回设置") }
-            if (secondaryPage == "学期与作息" || secondaryPage == "任务排程") {
+            if (secondaryPage == "学期与作息" || secondaryPage == "任务") {
             TextButton(onClick = {
                 termStartText = settings.termStartDate
                 totalWeeksText = settings.totalWeeks.toString()
@@ -144,6 +162,23 @@ fun SettingsScreen(
                 scheduleDraft = settings
                 dataMessage = "已撤销所有未保存修改"
             }) { Text("全部撤销") }
+            }
+        }
+
+        if (secondaryPage == "外观") {
+            FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                listOf(
+                    ThemeMode.SYSTEM to "跟随系统",
+                    ThemeMode.LIGHT to "浅色",
+                    ThemeMode.DARK to "深色",
+                ).forEach { (mode, label) ->
+                    FilterChip(
+                        selected = settings.themeMode == mode,
+                        onClick = { onChange(settings.copy(themeMode = mode)) },
+                        label = { Text(label) },
+                        modifier = Modifier.padding(end = 8.dp),
+                    )
+                }
             }
         }
 
@@ -166,20 +201,16 @@ fun SettingsScreen(
             }) { Text("设为下周一") }
         }
 
-        val nowWeek = WeekCalc.weekOf(WeekCalc.parseDate(termStartText), LocalDate.now()) // 开学日推算预览
-        Text(
-            if (termStartText.isBlank()) "开学日期未知？可以只校准当前教学周喵"
-            else "按这个日期算，今天是第 $nowWeek 周",
-            fontSize = 12.sp,
-        )
-
-        OutlinedTextField(
-            value = calibrationText,
-            onValueChange = { calibrationText = it; calibrationEnabled = true },
-            label = { Text("当前教学周校准（1～总周数）") },
-            supportingText = { Text(if (calibrationEnabled) "校准后每周一递增；恢复按开学日请点下方按钮" else "当前按开学日计算；输入周数即可校准") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+        WheelSettingRow(
+            label = "当前教学周",
+            value = calibrationText.toIntOrNull()?.let { "第 $it 周" } ?: "按开学日计算",
+            onClick = {
+                val total = totalWeeksText.toIntOrNull()?.coerceIn(1, 60) ?: 20
+                wheelSetting = WheelSetting("当前教学周", (1..total).toList(), calibrationText.toIntOrNull() ?: 1, "周") {
+                    calibrationText = it.toString()
+                    calibrationEnabled = true
+                }
+            },
         )
         Row {
             TextButton(onClick = {
@@ -191,24 +222,15 @@ fun SettingsScreen(
                 calibrationEnabled = false
             }) { Text("恢复按开学日") }
         }
-        Text("以上修改和恢复操作均需点击「保存设置」才生效。", fontSize = 12.sp)
-
-        Row(Modifier.padding(top = 8.dp)) {
-            OutlinedTextField(
-                value = totalWeeksText,
-                onValueChange = { totalWeeksText = it },
-                label = { Text("总周数") },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            OutlinedTextField(
-                value = reminderText,
-                onValueChange = { reminderText = it },
-                label = { Text("默认提前提醒(分钟)") },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
+        WheelSettingRow("总周数", "${totalWeeksText.toIntOrNull() ?: 20} 周") {
+            wheelSetting = WheelSetting("总周数", (1..60).toList(), totalWeeksText.toIntOrNull() ?: 20, "周") {
+                totalWeeksText = it.toString()
+            }
+        }
+        WheelSettingRow("默认提前提醒", "${reminderText.toIntOrNull() ?: 20} 分钟") {
+            wheelSetting = WheelSetting("默认提前提醒", (0..1440 step 5).toList(), reminderText.toIntOrNull() ?: 20, "分钟") {
+                reminderText = it.toString()
+            }
         }
 
         Row(
@@ -216,8 +238,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text("响铃提醒（默认关，只需要通知就别开）", fontSize = 14.sp)
-                Text("打开后会额外放系统闹钟铃声；只想要通知就不用打开", fontSize = 11.sp)
+                Text("响铃提醒", fontSize = 14.sp)
             }
             Switch(
                 checked = strongReminderDraft,
@@ -228,110 +249,97 @@ fun SettingsScreen(
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         Text("上课节次时间", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("共 ${settings.periods.size} 节。时间填成 8:00 这种格式。", fontSize = 12.sp)
         periodsDraft.forEachIndexed { index, period ->
             PeriodRow(
                 index = index,
                 start = period.first,
                 end = period.second,
-                onChange = { start, end ->
-                    periodsDraft = periodsDraft.toMutableList().also { it[index] = start to end }
-                },
+                onEditStart = { editingPeriod = index to true },
+                onEditEnd = { editingPeriod = index to false },
             )
         }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         }
-        if (secondaryPage == "任务排程") {
-        Text("任务排程", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text(
-            "这些数字先保存在草稿里，点击保存后才会重新排程。系统会扣掉上课时间，再把任务填进空档。",
-            fontSize = 12.sp,
-        )
-
-        StepperRow(
-            label = "每天开始时间",
-            hint = "这之前不排任务",
-            value = clockText(scheduleDraft.wakeMinute),
-            dec = { scheduleDraft = scheduleDraft.copy(wakeMinute = (scheduleDraft.wakeMinute - 30).coerceAtLeast(0)) },
-            inc = { scheduleDraft = scheduleDraft.copy(wakeMinute = (scheduleDraft.wakeMinute + 30).coerceAtMost(scheduleDraft.sleepMinute - 30)) },
-        )
-        StepperRow(
-            label = "每天结束时间",
-            hint = "这之后不再排任务",
-            value = clockText(scheduleDraft.sleepMinute),
-            dec = { scheduleDraft = scheduleDraft.copy(sleepMinute = (scheduleDraft.sleepMinute - 30).coerceAtLeast(scheduleDraft.wakeMinute + 30)) },
-            inc = { scheduleDraft = scheduleDraft.copy(sleepMinute = (scheduleDraft.sleepMinute + 30).coerceAtMost(1440)) },
-        )
-        StepperRow(
-            label = "每天最多安排",
-            hint = "防止把一整天都当成空闲",
-            value = humanDuration(scheduleDraft.dailyCapMinutes.toLong()),
-            dec = { scheduleDraft = scheduleDraft.copy(dailyCapMinutes = (scheduleDraft.dailyCapMinutes - 30).coerceAtLeast(30)) },
-            inc = { scheduleDraft = scheduleDraft.copy(dailyCapMinutes = (scheduleDraft.dailyCapMinutes + 30).coerceAtMost(720)) },
-        )
-        StepperRow(
-            label = "单次专注时长",
-            hint = "一段最多连着做多久",
-            value = "${scheduleDraft.focusChunkMinutes} 分钟",
-            dec = { scheduleDraft = scheduleDraft.copy(focusChunkMinutes = (scheduleDraft.focusChunkMinutes - 15).coerceAtLeast(15)) },
-            inc = { scheduleDraft = scheduleDraft.copy(focusChunkMinutes = (scheduleDraft.focusChunkMinutes + 15).coerceAtMost(240)) },
-        )
-        StepperRow(
-            label = "两块之间休息",
-            value = "${scheduleDraft.breakMinutes} 分钟",
-            dec = { scheduleDraft = scheduleDraft.copy(breakMinutes = (scheduleDraft.breakMinutes - 5).coerceAtLeast(0)) },
-            inc = { scheduleDraft = scheduleDraft.copy(breakMinutes = (scheduleDraft.breakMinutes + 5).coerceAtMost(30)) },
-        )
-        StepperRow(
-            label = "最短可用空档",
-            hint = "太碎的缝隙不排，省得来回切",
-            value = "${scheduleDraft.minSlotMinutes} 分钟",
-            dec = { scheduleDraft = scheduleDraft.copy(minSlotMinutes = (scheduleDraft.minSlotMinutes - 5).coerceAtLeast(5)) },
-            inc = { scheduleDraft = scheduleDraft.copy(minSlotMinutes = (scheduleDraft.minSlotMinutes + 5).coerceAtMost(60)) },
-        )
+        if (secondaryPage == "任务") {
+        Text("任务规划", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        WheelSettingRow("每天开始时间", clockText(scheduleDraft.wakeMinute)) {
+            clockSetting = ClockSetting("每天开始时间", scheduleDraft.wakeMinute, 0, scheduleDraft.sleepMinute - 30) {
+                scheduleDraft = scheduleDraft.copy(wakeMinute = it)
+            }
+        }
+        WheelSettingRow("每天结束时间", clockText(scheduleDraft.sleepMinute)) {
+            clockSetting = ClockSetting("每天结束时间", scheduleDraft.sleepMinute, scheduleDraft.wakeMinute + 30, 1440) {
+                scheduleDraft = scheduleDraft.copy(sleepMinute = it)
+            }
+        }
+        WheelSettingRow("每天最多安排", humanDuration(scheduleDraft.dailyCapMinutes.toLong())) {
+            wheelSetting = minuteSetting("每天最多安排", scheduleDraft.dailyCapMinutes, 30, 720, 30) {
+                scheduleDraft = scheduleDraft.copy(dailyCapMinutes = it)
+            }
+        }
+        WheelSettingRow("每天通勤", humanDuration(scheduleDraft.commuteMinutes.toLong())) {
+            wheelSetting = minuteSetting("每天通勤", scheduleDraft.commuteMinutes, 0, 360, 15) {
+                scheduleDraft = scheduleDraft.copy(commuteMinutes = it)
+            }
+        }
+        WheelSettingRow("每天饮食", humanDuration(scheduleDraft.mealMinutes.toLong())) {
+            wheelSetting = minuteSetting("每天饮食", scheduleDraft.mealMinutes, 0, 360, 15) {
+                scheduleDraft = scheduleDraft.copy(mealMinutes = it)
+            }
+        }
+        WheelSettingRow("每天睡眠", humanDuration(scheduleDraft.sleepMinutes.toLong())) {
+            wheelSetting = minuteSetting("每天睡眠", scheduleDraft.sleepMinutes, 240, 720, 30) {
+                scheduleDraft = scheduleDraft.copy(sleepMinutes = it)
+            }
+        }
+        WheelSettingRow("单次专注时长", "${scheduleDraft.focusChunkMinutes} 分钟") {
+            wheelSetting = minuteSetting("单次专注时长", scheduleDraft.focusChunkMinutes, 15, 240, 15) {
+                scheduleDraft = scheduleDraft.copy(focusChunkMinutes = it)
+            }
+        }
+        WheelSettingRow("两块之间休息", "${scheduleDraft.breakMinutes} 分钟") {
+            wheelSetting = minuteSetting("两块之间休息", scheduleDraft.breakMinutes, 0, 30, 5) {
+                scheduleDraft = scheduleDraft.copy(breakMinutes = it)
+            }
+        }
+        WheelSettingRow("最短可用空档", "${scheduleDraft.minSlotMinutes} 分钟") {
+            wheelSetting = minuteSetting("最短可用空档", scheduleDraft.minSlotMinutes, 5, 60, 5) {
+                scheduleDraft = scheduleDraft.copy(minSlotMinutes = it)
+            }
+        }
 
         ToggleRow(
             label = "到点提醒该做这件事",
-            hint = "每个排好的时段开始时通知，通知里能直接登记进度",
             checked = scheduleDraft.sessionReminderEnabled,
             onCheckedChange = { scheduleDraft = scheduleDraft.copy(sessionReminderEnabled = it) },
         )
-        StepperRow(
-            label = "DDL 提前预警",
-            value = "${scheduleDraft.ddlWarnHours} 小时",
-            dec = { scheduleDraft = scheduleDraft.copy(ddlWarnHours = (scheduleDraft.ddlWarnHours - 1).coerceAtLeast(scheduleDraft.ddlUrgentHours)) },
-            inc = { scheduleDraft = scheduleDraft.copy(ddlWarnHours = (scheduleDraft.ddlWarnHours + 1).coerceAtMost(168)) },
-        )
-        StepperRow(
-            label = "DDL 紧急提醒",
-            value = "${scheduleDraft.ddlUrgentHours} 小时",
-            hint = "到这个点还没做完就强提醒",
-            dec = { scheduleDraft = scheduleDraft.copy(ddlUrgentHours = (scheduleDraft.ddlUrgentHours - 1).coerceAtLeast(1)) },
-            inc = {
-                scheduleDraft = scheduleDraft.copy(
-                        ddlUrgentHours = (scheduleDraft.ddlUrgentHours + 1).coerceAtMost(scheduleDraft.ddlWarnHours.coerceAtLeast(1)),
-                    )
-            },
-        )
+        WheelSettingRow("DDL 提前预警", "${scheduleDraft.ddlWarnHours} 小时") {
+            wheelSetting = WheelSetting("DDL 提前预警", (scheduleDraft.ddlUrgentHours..168).toList(), scheduleDraft.ddlWarnHours, "小时") {
+                scheduleDraft = scheduleDraft.copy(ddlWarnHours = it)
+            }
+        }
+        WheelSettingRow("DDL 紧急提醒", "${scheduleDraft.ddlUrgentHours} 小时") {
+            wheelSetting = WheelSetting("DDL 紧急提醒", (1..scheduleDraft.ddlWarnHours.coerceAtLeast(1)).toList(), scheduleDraft.ddlUrgentHours, "小时") {
+                scheduleDraft = scheduleDraft.copy(ddlUrgentHours = it)
+            }
+        }
         ToggleRow(
             label = "每天早上播报",
-            hint = "把今天要推进的事和最近的 DDL 播一次",
             checked = scheduleDraft.digestEnabled,
             onCheckedChange = { scheduleDraft = scheduleDraft.copy(digestEnabled = it) },
         )
-        StepperRow(
-            label = "播报时间",
-            value = clockText(scheduleDraft.digestMinute),
-            dec = { scheduleDraft = scheduleDraft.copy(digestMinute = (scheduleDraft.digestMinute - 30 + 1440) % 1440) },
-            inc = { scheduleDraft = scheduleDraft.copy(digestMinute = (scheduleDraft.digestMinute + 30) % 1440) },
-        )
+        WheelSettingRow("播报时间", clockText(scheduleDraft.digestMinute)) {
+            clockSetting = ClockSetting("播报时间", scheduleDraft.digestMinute, 0, 1435) {
+                scheduleDraft = scheduleDraft.copy(digestMinute = it)
+            }
+        }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         }
-        if (secondaryPage == "学期与作息" || secondaryPage == "任务排程") {
+        if (secondaryPage == "学期与作息" || secondaryPage == "任务") {
         Row(Modifier.padding(top = 8.dp)) {
             OutlinedButton(onClick = {
                 val academicChanged = termStartText != settings.termStartDate ||
@@ -371,6 +379,9 @@ fun SettingsScreen(
                     wakeMinute = scheduleDraft.wakeMinute,
                     sleepMinute = scheduleDraft.sleepMinute,
                     dailyCapMinutes = scheduleDraft.dailyCapMinutes,
+                    commuteMinutes = scheduleDraft.commuteMinutes,
+                    mealMinutes = scheduleDraft.mealMinutes,
+                    sleepMinutes = scheduleDraft.sleepMinutes,
                     focusChunkMinutes = scheduleDraft.focusChunkMinutes,
                     breakMinutes = scheduleDraft.breakMinutes,
                     minSlotMinutes = scheduleDraft.minSlotMinutes,
@@ -381,8 +392,8 @@ fun SettingsScreen(
                     digestMinute = scheduleDraft.digestMinute,
                 )
                 onChange(next)
-                dataMessage = "设置保存好了喵"
-                Toast.makeText(context, "设置保存好了，周次继续往前走喵", Toast.LENGTH_SHORT).show()
+                dataMessage = ""
+                Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
             }) { Text("保存设置") }
             Spacer(Modifier.width(8.dp))
             TextButton(onClick = {
@@ -403,7 +414,6 @@ fun SettingsScreen(
         }
         if (secondaryPage == "数据备份") {
         Text("全部本地数据", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("换手机、重装应用前先导出；内部数据空了会从这份备份自动恢复。", fontSize = 12.sp)
         FlowRow(Modifier.padding(top = 4.dp)) {
             OutlinedButton(onClick = {
                 val path = Store.get(context).exportToExternal()
@@ -415,12 +425,10 @@ fun SettingsScreen(
                     onRestore?.invoke()
                     dataMessage = if (onRestore != null) "已从备份恢复，课程、设置和任务已同步"
                     else "备份已恢复，请重新打开应用刷新课程、设置和任务"
-                    Toast.makeText(context, "备份回来啦喵", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "备份已恢复", Toast.LENGTH_SHORT).show()
                 } else dataMessage = "外部目录里没有备份文件"
             }) { Text("从备份恢复") }
         }
-        Text("备份路径：Android/data/com.balance.deadlinereminder/files/planner.txt", fontSize = 10.sp)
-
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         }
@@ -460,61 +468,74 @@ fun SettingsScreen(
         }
         TextButton(onClick = onTestNotification) { Text("发一条测试通知") }
 
-        Card(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            Column(Modifier.padding(10.dp)) {
-                Text("小米 / HyperOS 额外要做的事", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text(
-                    "1. 设置 → 应用设置 → DDL 提醒 → 允许「自启动」，省电策略改成「无限制」。\n" +
-                        "2. 设置 → 应用设置 → DDL 提醒 → 通知管理 → 允许通知、允许横幅。\n" +
-                        "3. 如果长时间没收到提醒，进最近任务把本应用加锁。",
-                    fontSize = 12.sp,
-                )
-                OutlinedButton(
-                    onClick = {
-                        context.startActivity(
-                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                                .setData(Uri.fromParts("package", context.packageName, null))
-                        )
-                    },
-                    modifier = Modifier.padding(top = 6.dp),
-                ) { Text("打开本应用系统设置") }
-            }
-        }
-
-        Text(
-            "已有 ${courses.size} 门课。数据只存在手机本地，不上传。",
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 12.dp),
-        )
+        OutlinedButton(onClick = {
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.fromParts("package", context.packageName, null))
+            )
+        }) { Text("应用系统设置") }
         }
         if (dataMessage.isNotBlank()) {
-            Text(dataMessage, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
+            Text(dataMessage, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
         }
+    }
+
+    wheelSetting?.let { setting ->
+        NumberWheelDialog(setting = setting, onDismiss = { wheelSetting = null })
+    }
+    clockSetting?.let { setting ->
+        ClockWheelDialog(setting = setting, onDismiss = { clockSetting = null })
+    }
+    editingPeriod?.let { (index, editStart) ->
+        val period = periodsDraft[index]
+        WheelTimeDialog(
+            initial = if (editStart) period.first else period.second,
+            onDismiss = { editingPeriod = null },
+            onConfirm = { selected ->
+                periodsDraft = periodsDraft.toMutableList().also {
+                    it[index] = if (editStart) selected to period.second else period.first to selected
+                }
+                editingPeriod = null
+            },
+        )
+    }
+}
+
+private fun Modifier.swipeRightToBack(enabled: Boolean = true, onBack: () -> Unit): Modifier {
+    if (!enabled) return this
+    return pointerInput(onBack) {
+        var dragDistance = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { dragDistance = 0f },
+            onHorizontalDrag = { change, amount ->
+                if (amount > 0f || dragDistance > 0f) {
+                    dragDistance = (dragDistance + amount).coerceAtLeast(0f)
+                    change.consume()
+                }
+            },
+            onDragEnd = {
+                if (dragDistance >= 96.dp.toPx()) onBack()
+                dragDistance = 0f
+            },
+            onDragCancel = { dragDistance = 0f },
+        )
     }
 }
 
 @Composable
-private fun PeriodRow(index: Int, start: String, end: String, onChange: (String, String) -> Unit) {
+private fun PeriodRow(index: Int, start: String, end: String, onEditStart: () -> Unit, onEditEnd: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("第 ${index + 1} 节", Modifier.width(58.dp), fontSize = 12.sp)
-        OutlinedTextField(
-            value = start,
-            onValueChange = { onChange(it, end) },
-            label = { Text("开始") },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-        )
+        Card(Modifier.weight(1f).clickable(onClick = onEditStart)) {
+            Text(start, modifier = Modifier.padding(14.dp))
+        }
         Spacer(Modifier.width(6.dp))
-        OutlinedTextField(
-            value = end,
-            onValueChange = { onChange(start, it) },
-            label = { Text("结束") },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-        )
+        Card(Modifier.weight(1f).clickable(onClick = onEditEnd)) {
+            Text(end, modifier = Modifier.padding(14.dp))
+        }
     }
 }
 
@@ -565,33 +586,19 @@ private fun clockText(minute: Int): String {
     return "%02d:%02d".format(m / 60, m % 60)
 }
 
-/** 一行「减号 · 值 · 加号」的设置项。排程参数都是整数分钟，点加减比手输错得少。 */
 @Composable
-private fun StepperRow(
-    label: String,
-    value: String,
-    dec: () -> Unit,
-    inc: () -> Unit,
-    hint: String = "",
-) {
-    Row(
-        Modifier.fillMaxWidth().padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 14.sp)
-            if (hint.isNotBlank()) Text(hint, fontSize = 11.sp)
+private fun WheelSettingRow(label: String, value: String, onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(top = 6.dp).clickable(onClick = onClick)) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Text(value, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
         }
-        OutlinedButton(onClick = dec) { Text("−") }
-        Text(value, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 10.dp))
-        OutlinedButton(onClick = inc) { Text("＋") }
     }
 }
 
 @Composable
 private fun ToggleRow(
     label: String,
-    hint: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
@@ -599,10 +606,80 @@ private fun ToggleRow(
         Modifier.fillMaxWidth().padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 14.sp)
-            if (hint.isNotBlank()) Text(hint, fontSize = 11.sp)
-        }
+        Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
+}
+
+private data class WheelSetting(
+    val title: String,
+    val values: List<Int>,
+    val selected: Int,
+    val suffix: String,
+    val onSelect: (Int) -> Unit,
+)
+
+private data class ClockSetting(
+    val title: String,
+    val selected: Int,
+    val first: Int,
+    val last: Int,
+    val onSelect: (Int) -> Unit,
+)
+
+private fun minuteSetting(title: String, selected: Int, first: Int, last: Int, step: Int, onSelect: (Int) -> Unit) =
+    WheelSetting(title, (first..last step step).toList(), selected, "分钟", onSelect)
+
+@Composable
+private fun ClockWheelDialog(setting: ClockSetting, onDismiss: () -> Unit) {
+    val validMinutes = remember(setting) {
+        (setting.first..setting.last).filter { it % 5 == 0 || it == 1440 }
+    } // 仅展示边界内的五分钟刻度，午夜结束值额外保留 24:00
+    val initial = setting.selected.takeIf { it in validMinutes }
+        ?: validMinutes.minByOrNull { kotlin.math.abs(it - setting.selected) }
+        ?: setting.first
+    var hour by remember(setting) { mutableIntStateOf(initial / 60) }
+    var minute by remember(setting) { mutableIntStateOf(initial % 60) }
+    val hours = remember(validMinutes) { validMinutes.map { it / 60 }.distinct() }
+    val minutes = validMinutes.filter { it / 60 == hour }.map { it % 60 }.distinct()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(setting.title) },
+        text = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                NumberWheel(hours, hour, "时", Modifier.weight(1f)) { selectedHour ->
+                    val available = validMinutes.filter { it / 60 == selectedHour }.map { it % 60 }
+                    hour = selectedHour
+                    minute = available.minByOrNull { kotlin.math.abs(it - minute) } ?: 0
+                }
+                NumberWheel(minutes, minute, "分", Modifier.weight(1f)) { minute = it }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { setting.onSelect(hour * 60 + minute); onDismiss() }) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun NumberWheelDialog(setting: WheelSetting, onDismiss: () -> Unit) {
+    var selected by remember(setting) { mutableStateOf(setting.selected) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(setting.title) },
+        text = {
+            NumberWheel(
+                values = setting.values,
+                selected = selected,
+                suffix = setting.suffix,
+                modifier = Modifier.fillMaxWidth(),
+                onSelect = { selected = it },
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { setting.onSelect(selected); onDismiss() }) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
