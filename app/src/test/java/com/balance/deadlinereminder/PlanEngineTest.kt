@@ -57,7 +57,21 @@ class PlanEngineTest {
         estimate: Int,
         deadline: String,
         priority: Int = 1,
-    ) = Task(id = id, title = "任务$id", estimateMinutes = estimate, deadline = deadline, priority = priority)
+        earliestStart: String = "",
+        dependencyIds: List<String> = emptyList(),
+        daily: Boolean = false,
+        estimateUnknown: Boolean = false,
+    ) = Task(
+        id = id,
+        title = "任务$id",
+        estimateMinutes = estimate,
+        deadline = deadline,
+        priority = priority,
+        earliestStart = earliestStart,
+        dependencyIds = dependencyIds,
+        daily = daily,
+        estimateUnknown = estimateUnknown,
+    )
 
     @Test
     fun `测试基准日是周一`() {
@@ -103,12 +117,15 @@ class PlanEngineTest {
     }
 
     @Test
-    fun `空闲倍率按五倍三倍边界分级`() {
-        val sample = task("ratio", 60, monday.atTime(23, 0).toString())
-        assertEquals(Urgency.RELAXED, urgencyFor(300, sample))
-        assertEquals(Urgency.ATTENTION, urgencyFor(180, sample))
-        assertEquals(Urgency.ATTENTION, urgencyFor(299, sample))
-        assertEquals(Urgency.URGENT, urgencyFor(179, sample))
+    fun `紧急程度同时考虑时间余量与重要程度`() {
+        val low = task("low", 60, monday.atTime(23, 0).toString(), priority = 0)
+        val medium = task("medium", 60, monday.atTime(23, 0).toString(), priority = 1)
+        val high = task("high", 60, monday.atTime(23, 0).toString(), priority = 2)
+        assertEquals(Urgency.RELAXED, urgencyFor(240, low))
+        assertEquals(Urgency.ATTENTION, urgencyFor(240, medium))
+        assertEquals(Urgency.ATTENTION, urgencyFor(240, high))
+        assertEquals(Urgency.URGENT, urgencyFor(120, high))
+        assertEquals(Urgency.ATTENTION, urgencyFor(120, low))
     }
 
     @Test
@@ -195,12 +212,100 @@ class PlanEngineTest {
     }
 
     @Test
-    fun `没有截止时间的任务不参与排程`() {
+    fun `没有截止时间的任务也会在滚动窗口内排程`() {
         val plan = PlanEngine.build(settings(), emptyList(), listOf(task("noDdl", 60, "")), monday.atTime(8, 0))
         val planFor = plan.planFor("noDdl")!!
-        assertTrue(planFor.blocks.isEmpty())
+        assertEquals(1, planFor.blocks.size)
+        assertEquals(monday.atTime(8, 0), planFor.blocks.first().start)
         assertEquals(Feasibility.NO_DEADLINE, planFor.feasibility)
-        assertTrue(plan.blocks.isEmpty())
+        assertEquals(monday.atTime(9, 0), planFor.finishAt)
+    }
+
+    @Test
+    fun `无截止的每日任务也参与排程`() {
+        val plan = PlanEngine.build(
+            settings(),
+            emptyList(),
+            listOf(task("daily", 30, "", daily = true)),
+            monday.atTime(8, 0),
+        )
+        assertEquals(30, plan.planFor("daily")!!.plannedMinutes)
+    }
+
+    @Test
+    fun `预计耗时未知的长周期任务等待估时且不占排程`() {
+        val plan = PlanEngine.build(
+            settings(dailyCapMinutes = 60),
+            emptyList(),
+            listOf(
+                task("contest", 60, monday.plusDays(7).atTime(20, 0).toString(), priority = 2, estimateUnknown = true),
+                task("known", 60, monday.atTime(20, 0).toString()),
+            ),
+            monday.atTime(8, 0),
+        )
+        val contest = plan.planFor("contest")!!
+        assertTrue(contest.blocks.isEmpty())
+        assertEquals(0, contest.plannedMinutes)
+        assertEquals(Feasibility.NEEDS_ESTIMATE, contest.feasibility)
+        assertEquals(60, plan.requiredMinutes)
+        assertEquals("known", plan.blocks.single().taskId)
+    }
+
+    @Test
+    fun `未到最早开始时间时不排程并在到点后加入排程`() {
+        val start = monday.atTime(10, 0)
+        val before = PlanEngine.build(
+            settings(dailyCapMinutes = 180),
+            emptyList(),
+            listOf(task("future", 60, monday.atTime(20, 0).toString(), earliestStart = start.toString())),
+            monday.atTime(8, 0),
+        )
+        assertTrue(before.planFor("future")!!.blocks.isEmpty())
+        assertEquals(Feasibility.NOT_STARTED, before.planFor("future")!!.feasibility)
+
+        val released = PlanEngine.build(
+            settings(dailyCapMinutes = 180),
+            emptyList(),
+            listOf(task("future", 60, monday.atTime(20, 0).toString(), earliestStart = start.toString())),
+            start,
+        )
+        assertEquals(start, released.planFor("future")!!.firstBlock?.start)
+    }
+
+    @Test
+    fun `依赖实际完成前阻塞完成后解锁`() {
+        val prerequisite = task("first", 30, monday.atTime(20, 0).toString())
+        val dependent = task(
+            "second",
+            30,
+            monday.atTime(21, 0).toString(),
+            dependencyIds = listOf(prerequisite.id),
+        )
+        val blocked = PlanEngine.build(settings(), emptyList(), listOf(prerequisite, dependent), monday.atTime(8, 0))
+        assertTrue(blocked.planFor("second")!!.blocks.isEmpty())
+        assertEquals(Feasibility.BLOCKED, blocked.planFor("second")!!.feasibility)
+
+        val unlocked = PlanEngine.build(
+            settings(),
+            emptyList(),
+            listOf(prerequisite.copy(done = true), dependent),
+            monday.atTime(8, 0),
+        )
+        assertEquals(30, unlocked.planFor("second")!!.plannedMinutes)
+    }
+
+    @Test
+    fun `临近截止的低重要任务不会被远期高重要任务压后`() {
+        val plan = PlanEngine.build(
+            settings(dailyCapMinutes = 60),
+            emptyList(),
+            listOf(
+                task("important", 60, monday.plusDays(2).atTime(20, 0).toString(), priority = 2),
+                task("urgent", 60, monday.atTime(9, 0).toString(), priority = 0),
+            ),
+            monday.atTime(8, 0),
+        )
+        assertEquals("urgent", plan.blocks.first().taskId)
     }
 
     @Test

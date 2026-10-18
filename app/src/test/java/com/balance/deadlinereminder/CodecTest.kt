@@ -44,6 +44,9 @@ class CodecTest {
         chunkMinutes = 45,
         daily = true,
         completedOn = "2026-10-17",
+        earliestStart = "2026-10-18T08:30",
+        dependencyIds = listOf("prepare-outline", "collect-data"),
+        estimateUnknown = true,
     )
 
     private val settings = AppSettings(
@@ -66,6 +69,16 @@ class CodecTest {
     fun tasks_roundTripWithAllFields() {
         val text = Codec.encode(ScheduleData(emptyList(), settings, listOf(task)))
         assertEquals(listOf(task), Codec.decode(text).tasks)
+    }
+
+    @Test
+    fun 旧任务记录缺少约束字段时使用安全默认值() {
+        val decoded = Codec.decode(
+            "v2\nT\tlegacy\t旧任务\t\t60\t0\t\t1\t\t0\t2026-10-17T08:00\t-1\t1\t",
+        ).tasks.single()
+        assertEquals("", decoded.earliestStart)
+        assertEquals(emptyList<String>(), decoded.dependencyIds)
+        assertEquals(false, decoded.estimateUnknown)
     }
 
     @Test

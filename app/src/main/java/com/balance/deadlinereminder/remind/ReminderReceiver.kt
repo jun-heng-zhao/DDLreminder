@@ -8,6 +8,7 @@ import com.balance.deadlinereminder.data.Task
 import com.balance.deadlinereminder.data.countdownLabel
 import com.balance.deadlinereminder.data.deadlineLabel
 import com.balance.deadlinereminder.data.humanDuration
+import com.balance.deadlinereminder.data.parseDateTime
 import com.balance.deadlinereminder.domain.Plan
 import com.balance.deadlinereminder.domain.PlanEngine
 import java.time.LocalDate
@@ -27,6 +28,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 ReminderScheduler.ACTION_SESSION -> onSession(context, intent, now)
                 ReminderScheduler.ACTION_DEADLINE -> onDeadline(context, intent, now)
                 ReminderScheduler.ACTION_DIGEST -> onDigest(context, intent, now)
+                ReminderScheduler.ACTION_TASK_REFRESH -> Store.get(context).refreshDailyTasks(now)
             }
         }
         // 响过一次之后余下的安排都要重算（进度、剩余空档都可能变了）
@@ -48,12 +50,15 @@ class ReminderReceiver : BroadcastReceiver() {
         val taskId = intent.getStringExtra(TaskActionReceiver.EXTRA_TASK_ID) ?: return
         val minutes = intent.getIntExtra(TaskActionReceiver.EXTRA_MINUTES, 0)
         val store = Store.get(context)
+        store.refreshDailyTasks(now)
         val task = store.tasks.firstOrNull { it.id == taskId } ?: return
         if (task.done || task.remainingMinutes <= 0) return
 
         val plan = PlanEngine.build(store.settings, store.courses, store.tasks, now)
-        val planFor = plan.planFor(taskId)
         val key = intent.getStringExtra(EXTRA_KEY) ?: "$taskId@${now.toLocalDate()}"
+        val plannedStart = parseDateTime(key.substringAfter('@', "")) ?: return
+        val planFor = plan.planFor(taskId) ?: return
+        if (planFor.blocks.none { it.start == plannedStart && !it.end.isBefore(now) }) return
         val id = ReminderScheduler.notificationId(key)
 
         val text = buildString {
@@ -62,7 +67,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 append(" · ").append(deadlineLabel(task.deadlineTime))
                 append(" · ").append(countdownLabel(task.deadlineTime, now))
             }
-            planFor?.finishAt?.let { finish ->
+            planFor.finishAt?.let { finish ->
                 append("\n照现在的空档，做完大约在 ").append(deadlineLabel(finish))
             } ?: append("\n按现在的课表排不下这件事，建议手动插一段时间")
         }
@@ -73,12 +78,12 @@ class ReminderReceiver : BroadcastReceiver() {
         val taskId = intent.getStringExtra(TaskActionReceiver.EXTRA_TASK_ID) ?: return
         val level = intent.getStringExtra(EXTRA_LEVEL) ?: ReminderScheduler.LEVEL_WARN
         val store = Store.get(context)
+        store.refreshDailyTasks(now)
         val task = store.tasks.firstOrNull { it.id == taskId } ?: return
         if (task.done || task.remainingMinutes <= 0) return
 
         val plan = PlanEngine.build(store.settings, store.courses, store.tasks, now)
         val planFor = plan.planFor(taskId)
-        val remaining = humanDuration(task.remainingMinutes.toLong())
         val left = task.deadlineTime?.let { deadlineLabel(it) }.orEmpty()
 
         val title = when (level) {
@@ -88,7 +93,12 @@ class ReminderReceiver : BroadcastReceiver() {
         }
         val text = buildString {
             append(left)
-            append(" · 还剩 ").append(remaining).append("没做")
+            if (task.estimateUnknown) {
+                append(" · 预计耗时待估")
+                append("\n请先补充预计耗时，再生成工作时段")
+                return@buildString
+            }
+            append(" · 还剩 ").append(humanDuration(task.remainingMinutes.toLong())).append("没做")
             when {
                 planFor?.finishAt != null ->
                     append("\n按当前课表，预计 ").append(deadlineLabel(planFor.finishAt)).append(" 能做完")
@@ -103,6 +113,7 @@ class ReminderReceiver : BroadcastReceiver() {
 
     private fun onDigest(context: Context, intent: Intent, now: LocalDateTime) {
         val store = Store.get(context)
+        store.refreshDailyTasks(now)
         val date = intent.getStringExtra(EXTRA_KEY)?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: now.toLocalDate()
         val plan = PlanEngine.build(store.settings, store.courses, store.tasks, now)
         val text = digestText(plan, date, now)

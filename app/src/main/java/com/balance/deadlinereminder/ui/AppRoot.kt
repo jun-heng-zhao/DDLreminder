@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ import com.balance.deadlinereminder.data.Course
 import com.balance.deadlinereminder.data.Store
 import com.balance.deadlinereminder.data.Task
 import com.balance.deadlinereminder.data.ThemeMode
+import com.balance.deadlinereminder.data.taskDayAt
 import com.balance.deadlinereminder.domain.PlanEngine
 import com.balance.deadlinereminder.domain.WeekCalc
 import com.balance.deadlinereminder.remind.Notifier
@@ -52,7 +54,7 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
 
     var courses by remember { mutableStateOf(store.courses) }
     var settings by remember { mutableStateOf(store.settings) }
-    var tasks by remember { mutableStateOf(store.tasks) }
+    val tasks by store.taskFlow.collectAsState()
     val pager = rememberPagerState(initialPage = 0, pageCount = { 3 }) // 任务、日历、设置；首屏就是今日任务
     val scope = rememberCoroutineScope()
     val tab = pager.currentPage
@@ -62,6 +64,7 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
     var newSlot by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var settingsSecondaryPage by remember { mutableStateOf(false) } // 二级设置页自行处理右滑返回
     var today by remember { mutableStateOf(LocalDate.now()) } // 跨日后触发今日课程与周数重算
+    var taskDay by remember { mutableStateOf(taskDayAt(LocalDateTime.now())) } // 每日任务固定在凌晨 4 点换日
     var planRefresh by remember { mutableIntStateOf(0) }     // 隔几分钟重排一次，时间推移不会让"预计做完"变旧
 
     fun persist(newCourses: List<Course> = courses, newSettings: AppSettings = settings) {
@@ -73,9 +76,9 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
         ReminderScheduler.reschedule(context)
     }
 
-    /** 任务改动同步三处：界面状态、磁盘、闹钟。 */
-    fun persistTasks(newTasks: List<Task>) {
-        tasks = newTasks
+    /** 任务改动由 Store 发布给界面，完成落盘后再重排闹钟。 */
+    fun persistTasks(update: () -> List<Task>) {
+        update()
         ReminderScheduler.reschedule(context)
     }
 
@@ -94,10 +97,15 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
             // 后台取消循环，恢复立即刷新；不注册解锁广播、不写课表文件。
             var ticks = 0
             while (true) {
-                val date = LocalDate.now() // 使用当前时区，避免跨日后仍显示昨天
+                val now = LocalDateTime.now()
+                val date = now.toLocalDate() // 课程日期仍按自然日切换
                 if (date != today) {
                     today = date
-                    tasks = store.refreshDailyTasks(date)
+                }
+                val nextTaskDay = taskDayAt(now)
+                if (nextTaskDay != taskDay) {
+                    taskDay = nextTaskDay
+                    store.refreshDailyTasks(now)
                     ReminderScheduler.reschedule(context)
                 }
                 ticks++
@@ -151,9 +159,9 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
                         courses = courses,
                         settings = settings,
                         plan = plan,
-                        onSave = { persistTasks(store.upsertTask(it)) },
-                        onDelete = { persistTasks(store.deleteTask(it)) },
-                        onDone = { taskId, done -> persistTasks(store.setTaskDone(taskId, done)) },
+                        onSave = { task -> persistTasks { store.upsertTask(task) } },
+                        onDelete = { taskId -> persistTasks { store.deleteTask(taskId) } },
+                        onDone = { taskId, done -> persistTasks { store.setTaskDone(taskId, done) } },
                         onAddCourse = { newSlot = 1 to 1 },
                     )
                 }
@@ -191,7 +199,6 @@ fun AppRoot(onThemeModeChange: (ThemeMode) -> Unit = {}) {
                     onRestore = {
                         courses = store.courses
                         settings = store.settings
-                        tasks = store.tasks
                         weekOffset = 0
                         ReminderScheduler.reschedule(context)
                     },

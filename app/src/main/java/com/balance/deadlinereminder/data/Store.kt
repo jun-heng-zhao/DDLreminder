@@ -1,8 +1,30 @@
 package com.balance.deadlinereminder.data
 
 import android.content.Context
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.time.LocalDate
+import java.time.LocalDateTime
+
+/** 任务列表的唯一可观察状态，后台刷新与前台操作共用同一份数据。 */
+class TaskState(initial: List<Task> = emptyList()) {
+    private val mutableFlow = MutableStateFlow(initial)
+
+    val flow: StateFlow<List<Task>> = mutableFlow.asStateFlow()
+    val value: List<Task> get() = mutableFlow.value
+
+    fun replace(tasks: List<Task>) {
+        mutableFlow.value = tasks
+    }
+
+    fun refreshDaily(today: LocalDate): List<Task> {
+        val refreshed = refreshDailyTaskStates(value, today)
+        if (refreshed != value) replace(refreshed)
+        return refreshed
+    }
+}
 
 /**
  * 仓库：内存态 + 一个文本文件。数据量极小（几十条课、几十条任务），不需要数据库。
@@ -11,6 +33,7 @@ import java.time.LocalDate
 class Store private constructor(private val appContext: Context) {
 
     private val file = File(appContext.filesDir, "planner.txt")
+    private val taskState = TaskState()
 
     /** 外部目录里的备份：换包/换手机时用它，非 debuggable 的正式包也能靠它恢复数据。 */
     private val externalFile: File?
@@ -22,8 +45,10 @@ class Store private constructor(private val appContext: Context) {
     var settings: AppSettings = AppSettings()
         private set
 
-    var tasks: List<Task> = emptyList()
-        private set
+    val taskFlow: StateFlow<List<Task>> = taskState.flow
+    var tasks: List<Task>
+        get() = taskState.value
+        private set(value) = taskState.replace(value)
 
     init {
         load()
@@ -102,18 +127,26 @@ class Store private constructor(private val appContext: Context) {
     }
 
     fun deleteTask(taskId: String): List<Task> {
-        val next = tasks.filterNot { it.id == taskId }
+        val next = tasks
+            .filterNot { it.id == taskId }
+            .map { task -> task.copy(dependencyIds = task.dependencyIds.filterNot { it == taskId }) }
         update(tasks = next)
         return next
     }
 
     /** 登记投入：完成一段就累加，累加到预估耗时即视为做完。 */
     fun addSpent(taskId: String, minutes: Int): List<Task> {
+        val today = taskDayAt(LocalDateTime.now()).toString()
         val next = tasks.map { task ->
             if (task.id != taskId) task
             else {
                 val spent = (task.spentMinutes + minutes).coerceAtLeast(0)
-                task.copy(spentMinutes = spent, done = task.done || spent >= task.estimateMinutes)
+                val done = task.done || spent >= task.estimateMinutes
+                task.copy(
+                    spentMinutes = spent,
+                    done = done,
+                    completedOn = if (task.daily && done) today else task.completedOn,
+                )
             }
         }
         update(tasks = next)
@@ -121,7 +154,7 @@ class Store private constructor(private val appContext: Context) {
     }
 
     fun setTaskDone(taskId: String, done: Boolean): List<Task> {
-        val today = LocalDate.now().toString()
+        val today = taskDayAt(LocalDateTime.now()).toString()
         val next = tasks.map { task ->
             if (task.id != taskId) task
             else if (done) task.copy(
@@ -135,14 +168,11 @@ class Store private constructor(private val appContext: Context) {
         return next
     }
 
-    /** 跨日后重置每日任务，使昨天完成的任务今天重新出现。 */
-    fun refreshDailyTasks(today: LocalDate = LocalDate.now()): List<Task> {
-        val date = today.toString()
-        val next = tasks.map { task ->
-            if (task.daily && task.done && task.completedOn != date) task.copy(done = false, spentMinutes = 0)
-            else task
-        }
-        if (next != tasks) update(tasks = next)
+    /** 每天凌晨 4 点跨任务日，使上一任务日完成的每日任务重新出现。 */
+    fun refreshDailyTasks(now: LocalDateTime = LocalDateTime.now()): List<Task> {
+        val previous = tasks
+        val next = taskState.refreshDaily(taskDayAt(now))
+        if (next != previous) update(tasks = next)
         return next
     }
 
@@ -154,4 +184,23 @@ class Store private constructor(private val appContext: Context) {
             instance ?: Store(context.applicationContext).also { instance = it }
         }
     }
+}
+
+/** 纯函数版本供前台、提醒与 JVM 测试共享；同一天重复调用不会改变数据。 */
+fun refreshDailyTaskStates(tasks: List<Task>, today: LocalDate): List<Task> {
+    val date = today.toString()
+    return tasks.map { task ->
+        if (task.daily && task.done && task.completedOn != date) {
+            task.copy(done = false, spentMinutes = 0, completedOn = "")
+        } else task
+    }
+}
+
+/** 凌晨 4 点前仍算前一个任务日，避免熬夜完成后刚过午夜就立刻复位。 */
+fun taskDayAt(now: LocalDateTime): LocalDate = now.minusHours(4).toLocalDate()
+
+/** 严格晚于当前时刻的下一次凌晨 4 点刷新。 */
+fun nextTaskRefreshAt(now: LocalDateTime): LocalDateTime {
+    val todayAtFour = now.toLocalDate().atTime(4, 0)
+    return if (todayAtFour.isAfter(now)) todayAtFour else todayAtFour.plusDays(1)
 }

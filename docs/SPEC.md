@@ -10,7 +10,7 @@
 
 **目标**：在已有课表能力之上，新增「任务（DDL）」这条主线——用户只要交代「做什么、大概要多久、什么时候必须交」，应用就用课程空档算出「什么时候做、来不来得及」，并在关键节点把人叫回来。
 
-**用户故事**
+### 用户故事
 
 | 编号 | 故事                                                  | 期望结果                                                                                                          |
 | ---- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -21,6 +21,7 @@
 | US-5 | 作为学生，我希望一天开始时知道今天要干什么            | 每天早上（默认 07:30）一条播报：今天要推进几件事、共多少小时                                                      |
 | US-6 | 作为学生，我不想被课程提醒打扰到错过 DDL              | 截止前 24 小时预警、前 3 小时紧急提醒、截止当刻再提醒一次                                                         |
 | US-7 | 作为学生，我不希望课表和任务被上传                    | 不申请 `INTERNET` 权限；数据只写本机 `filesDir/planner.txt`                                                       |
+| US-8 | 作为学生，我不希望午夜后已完成的每日任务立刻重新出现  | 以凌晨 04:00 为任务日边界；此前仍属于前一任务日，到点复位每日任务并重排计划                                       |
 
 ---
 
@@ -28,19 +29,24 @@
 
 ### 2.1 `Task`（`data/Task.kt`）
 
-| 字段              | 类型      | 默认值     | 说明                                                            |
-| ----------------- | --------- | ---------- | --------------------------------------------------------------- |
-| `id`              | `String`  | 无（必填） | `UUID.randomUUID().toString()`                                  |
-| `title`           | `String`  | 无（必填） | 要做什么；保存时校验非空                                        |
-| `courseName`      | `String`  | `""`       | 关联的科目，可空；用来和课程对上，留空即私人事务                |
-| `estimateMinutes` | `Int`     | `60`       | 预估总耗时（分钟）                                              |
-| `spentMinutes`    | `Int`     | `0`        | 已投入时间（分钟），登记进度时累加                              |
-| `deadline`        | `String`  | `""`       | 截止时间，格式 `yyyy-MM-ddTHH:mm`；空串表示未填                 |
-| `priority`        | `Int`     | `1`        | `0`=低 `1`=中 `2`=高（`PRIORITY_NAMES = ["低","中","高"]`）     |
-| `notes`           | `String`  | `""`       | 备注                                                            |
-| `done`            | `Boolean` | `false`    | 是否完成                                                        |
-| `createdAt`       | `String`  | `""`       | 创建时间，`formatDateTime()` 写入                               |
-| `chunkMinutes`    | `Int`     | `-1`       | 单个任务一次最多安排多久；`-1` 表示跟随全局 `focusChunkMinutes` |
+| 字段              | 类型           | 默认值        | 说明                                                            |
+| ----------------- | -------------- | ------------- | --------------------------------------------------------------- |
+| `id`              | `String`       | 无（必填）    | `UUID.randomUUID().toString()`                                  |
+| `title`           | `String`       | 无（必填）    | 要做什么；保存时校验非空                                        |
+| `courseName`      | `String`       | `""`          | 关联的科目，可空；用来和课程对上，留空即私人事务                |
+| `estimateMinutes` | `Int`          | `60`          | 预估总耗时（分钟）                                              |
+| `spentMinutes`    | `Int`          | `0`           | 已投入时间（分钟），登记进度时累加                              |
+| `deadline`        | `String`       | `""`          | 截止时间，格式 `yyyy-MM-ddTHH:mm`；空串表示未填                 |
+| `priority`        | `Int`          | `1`           | `0`=低 `1`=中 `2`=高（`PRIORITY_NAMES = ["低","中","高"]`）     |
+| `notes`           | `String`       | `""`          | 备注                                                            |
+| `done`            | `Boolean`      | `false`       | 是否完成                                                        |
+| `createdAt`       | `String`       | `""`          | 创建时间，`formatDateTime()` 写入                               |
+| `chunkMinutes`    | `Int`          | `-1`          | 单个任务一次最多安排多久；`-1` 表示跟随全局 `focusChunkMinutes` |
+| `daily`           | `Boolean`      | `false`       | 是否为每日任务；完成状态保留到下一个凌晨 04:00                  |
+| `completedOn`     | `String`       | `""`          | 每日任务最近完成的任务日，格式 `yyyy-MM-dd`                     |
+| `earliestStart`   | `String`       | `""`          | 最早开始时间，格式同 `deadline`；到点前不参与排程               |
+| `dependencyIds`   | `List<String>` | `emptyList()` | 必须先实际完成的直接前置任务 ID                                 |
+| `estimateUnknown` | `Boolean`      | `false`       | 预计耗时是否未知；为真时暂不生成工作块                          |
 
 派生属性（非存储字段）：
 
@@ -48,6 +54,7 @@
 | ------------------------------ | --------------------------------------------------------------------------------- |
 | `remainingMinutes`             | `(estimateMinutes - spentMinutes).coerceAtLeast(0)`                               |
 | `deadlineTime: LocalDateTime?` | `parseDateTime(deadline)`；`""` → `null`                                          |
+| `earliestStartTime`            | `parseDateTime(earliestStart)`；`""` → `null`                                     |
 | `progress: Float`              | `spentMinutes / estimateMinutes`，夹在 `0f..1f`；`estimateMinutes <= 0` 时为 `0f` |
 | `isOverdue(now)`               | `!done && deadlineTime?.isBefore(now) == true`                                    |
 | `chunk(settings)`              | `if (chunkMinutes > 0) chunkMinutes else settings.focusChunkMinutes`              |
@@ -136,7 +143,7 @@ fun build(
 - `horizon = now + 14 天`
 - `planUntil = if (无任何截止时间) horizon else min(horizon, 最晚截止时间)`
 - `freeMinutes` = `[now, planUntil]` 内所有空档分钟数之和
-- `requiredMinutes` = **所有未完成任务**的 `remainingMinutes` 之和（包含没截止时间和已过期的）
+- `requiredMinutes` = **所有未完成且耗时已知任务**的 `remainingMinutes` 之和（包含没截止时间和已过期的）
 
 每日空档（`freeSlots` → `daySlots`）规则：
 
@@ -149,17 +156,17 @@ fun build(
 
 ### 3.2 排序规则
 
-**参与排程的任务**（`active`）三重过滤：`!done` → `remainingMinutes > 0` → `deadlineTime` 晚于 `now`。
+**参与排程的任务**（`active`）依次过滤：`!done` → `!estimateUnknown` → `remainingMinutes > 0` → 未过期 → `earliestStartTime <= now` → 所有现存前置任务均已实际完成。不存在的依赖 ID 按已删除任务处理，不继续阻塞。
 
-排序：`compareBy({ it.deadlineTime }, { -it.priority }, { it.title })` —— 先截止的先排，同截止比优先级（高在前），再按标题。
+排序：有截止时间的任务优先，按截止时间升序；同截止时间按重要程度、创建时间、标题稳定排序。无截止任务排在其后，按重要程度、创建时间、标题排序，在 14 天滚动窗口内填块。
 
-**结果列表**（`Plan.plans`）按同一顺序排列，但集合是**全部未完成任务**（含 `NO_DEADLINE` / `OVERDUE`，它们不参与填块）：`compareBy({ it.deadlineTime == null }, { it.deadlineTime ?: LocalDateTime.MAX }, { -it.priority }, { it.title })`。
+**结果列表**（`Plan.plans`）包含全部未完成任务，包括 `NO_DEADLINE`、`NOT_STARTED`、`BLOCKED`、`NEEDS_ESTIMATE` 与 `OVERDUE`；其中耗时未知、未到最早开始时间和依赖未满足的任务不填块。
 
 ### 3.3 块的时长规则
 
 对每个空档，从空档起点开始循环：
 
-```
+```text
 candidate = 第一个 remaining > 0 且 deadlineTime > cursor 的任务（按 3.2 顺序）
 left        = 该任务剩余分钟
 untilDdl    = cursor 到该任务截止时间的分钟数
@@ -186,39 +193,48 @@ cursor += give，且若 give >= chunk 再 += breakMinutes（排满一块才留�
 判定顺序（**短路的 `when`，顺序即优先级**）：
 
 1. `remainingMinutes == 0` → `DONE`
-2. `deadline == null` → `NO_DEADLINE`
-3. `deadline.isBefore(now)` → `OVERDUE`
-4. `finishAt == null` → `IMPOSSIBLE`
-5. `slack < tightThreshold(task)` → `TIGHT`
-6. 其余 → `COMFORTABLE`
+2. `deadline.isBefore(now)` → `OVERDUE`
+3. `estimateUnknown` → `NEEDS_ESTIMATE`
+4. `earliestStartTime > now` → `NOT_STARTED`
+5. 存在未完成的现存前置任务 → `BLOCKED`
+6. `deadline == null` → `NO_DEADLINE`
+7. `finishAt == null` → `IMPOSSIBLE`
+8. `slack < tightThreshold(task)` → `TIGHT`
+9. 其余 → `COMFORTABLE`
 
 `tightThreshold(task) = max(30, task.estimateMinutes / 4)`（分钟）。
 
-| 状态          | 触发条件                           | 含义                               |
-| ------------- | ---------------------------------- | ---------------------------------- |
-| `DONE`        | `remainingMinutes == 0`            | 已做完（登记满了，或手动标记完成） |
-| `NO_DEADLINE` | `deadlineTime == null` 且未做完    | 没法排程                           |
-| `OVERDUE`     | `deadlineTime` 早于 `now` 且未做完 | 已过期                             |
-| `IMPOSSIBLE`  | 窗口内没排出完整结果               | 按现在的时间表做不完               |
-| `TIGHT`       | 富余 < `max(30, estimate/4)` 分钟  | 排得下但几乎踩点                   |
-| `COMFORTABLE` | 其余                               | 排得下且富余充足                   |
+| 状态             | 触发条件                           | 含义                               |
+| ---------------- | ---------------------------------- | ---------------------------------- |
+| `DONE`           | `remainingMinutes == 0`            | 已做完（登记满了，或手动标记完成） |
+| `NO_DEADLINE`    | `deadlineTime == null` 且未做完    | 已进入 14 天滚动计划，无 DDL 提醒  |
+| `NOT_STARTED`    | `earliestStartTime` 晚于 `now`     | 未到最早开始时间，暂不排程         |
+| `BLOCKED`        | 至少一个现存前置任务未实际完成     | 等待前置任务完成                   |
+| `NEEDS_ESTIMATE` | `estimateUnknown == true`          | 等待补充预计耗时                   |
+| `OVERDUE`        | `deadlineTime` 早于 `now` 且未做完 | 已过期                             |
+| `IMPOSSIBLE`     | 窗口内没排出完整结果               | 按现在的时间表做不完               |
+| `TIGHT`          | 富余 < `max(30, estimate/4)` 分钟  | 排得下但几乎踩点                   |
+| `COMFORTABLE`    | 其余                               | 排得下且富余充足                   |
 
 ### 3.5 边界情况
 
-| 情况                                                         | 行为                                                                                                                                                                                                                               |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **无截止时间**（`deadline == ""`）                           | 不进入 `active`，永远不产生工作块；`feasibility = NO_DEADLINE`；但它计入 `Plan.requiredMinutes`（因此 `freeMinutes` 与 `requiredMinutes` 的对比会把它们算作需求）。UI 提示：「留空截止时间也能记，但不会排进时间表，也不会提醒。」 |
-| **已过期**（`deadlineTime <= now`）                          | 不进入 `active`，不排块；`feasibility = OVERDUE`；出现在任务页顶部风险提示里。                                                                                                                                                     |
-| **已完成**（`done == true`）                                 | 被 `!it.done` 过滤掉，既不出现在 `plans` 也不出现在 `requiredMinutes`。已完成任务不再有任何提醒。                                                                                                                                  |
-| **已完成但只登记了一半**（`done == true, spent < estimate`） | 同样被整体排除。（`Store.setTaskDone(id, true)` 会把 `spentMinutes` 抬到 `max(spent, estimate)`，所以正常路径不会出现。）                                                                                                          |
-| **`remainingMinutes == 0` 但 `done == false`**               | 进入 `plans`，判定为 `DONE`，不排块。`Store.addSpent` 在 `spent >= estimate` 时会顺手把 `done` 置 `true`。                                                                                                                         |
-| **排不下**                                                   | 排出能排的部分（可能一个块都没有），`finishAt = null`，`feasibility = IMPOSSIBLE`，`shortfallMinutes > 0`。                                                                                                                        |
-| **截止时间落在空档中间**                                     | `untilDdl` 截断该块，块在截止时刻前结束，不会跨越截止时间。                                                                                                                                                                        |
-| **剩余空档短于 `minSlotMinutes`**（或短于任务剩余时间）      | 停止在这个空档继续切块（`break`，不是 `continue`），剩余时间留给后面的空档。                                                                                                                                                       |
-| **空档不足 1 分钟 / 逾期 `from >= to`**                      | `freeSlots` 直接返回空列表。                                                                                                                                                                                                       |
-| **`sleepMinute <= wakeMinute`**                              | `workWindowEnd` 兜底为 `workWindowStart + 30`，不会出现负长度窗口。                                                                                                                                                                |
-| **一件任务被拆到多个空档**                                   | 允许；`blocks.filter { it.taskId == ... }` 汇总，`finishAt` 取最后一个块的 `end`。                                                                                                                                                 |
-| **`give` 计算为 0**                                          | `coerceAtLeast(1)` 保证至少 1 分钟，配合上面的 `break` 条件不会死循环。                                                                                                                                                            |
+| 情况                                                         | 行为                                                                                                                      |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **无截止时间**（`deadline == ""`）                           | 在 14 天滚动窗口内参与排程，`feasibility = NO_DEADLINE`；产生工作块和时段提醒，但不产生 DDL 三级提醒。每日任务同样适用。  |
+| **未到最早开始时间**                                         | 不进入工作块分配，`feasibility = NOT_STARTED`；显示在进行中任务列表底部，到点重算后加入。                                 |
+| **前置任务未完成**                                           | 不进入工作块分配，`feasibility = BLOCKED`；前置任务实际完成后解锁。删除前置任务时清理其他任务中的引用。                   |
+| **预计耗时未知**                                             | 不进入工作块分配，`feasibility = NEEDS_ESTIMATE`；不产生时段提醒，但已有截止时间仍产生 DDL 三级提醒。                     |
+| **已过期**（`deadlineTime <= now`）                          | 不进入 `active`，不排块；`feasibility = OVERDUE`；出现在任务页顶部风险提示里。                                            |
+| **已完成**（`done == true`）                                 | 被 `!it.done` 过滤掉，既不出现在 `plans` 也不出现在 `requiredMinutes`。已完成任务不再有任何提醒。                         |
+| **已完成但只登记了一半**（`done == true, spent < estimate`） | 同样被整体排除。（`Store.setTaskDone(id, true)` 会把 `spentMinutes` 抬到 `max(spent, estimate)`，所以正常路径不会出现。） |
+| **`remainingMinutes == 0` 但 `done == false`**               | 进入 `plans`，判定为 `DONE`，不排块。`Store.addSpent` 在 `spent >= estimate` 时会顺手把 `done` 置 `true`。                |
+| **排不下**                                                   | 排出能排的部分（可能一个块都没有），`finishAt = null`，`feasibility = IMPOSSIBLE`，`shortfallMinutes > 0`。               |
+| **截止时间落在空档中间**                                     | `untilDdl` 截断该块，块在截止时刻前结束，不会跨越截止时间。                                                               |
+| **剩余空档短于 `minSlotMinutes`**（或短于任务剩余时间）      | 停止在这个空档继续切块（`break`，不是 `continue`），剩余时间留给后面的空档。                                              |
+| **空档不足 1 分钟 / 逾期 `from >= to`**                      | `freeSlots` 直接返回空列表。                                                                                              |
+| **`sleepMinute <= wakeMinute`**                              | `workWindowEnd` 兜底为 `workWindowStart + 30`，不会出现负长度窗口。                                                       |
+| **一件任务被拆到多个空档**                                   | 允许；`blocks.filter { it.taskId == ... }` 汇总，`finishAt` 取最后一个块的 `end`。                                        |
+| **`give` 计算为 0**                                          | `coerceAtLeast(1)` 保证至少 1 分钟，配合上面的 `break` 条件不会死循环。                                                   |
 
 ### 3.6 `Plan` 上的查询
 
@@ -230,7 +246,7 @@ cursor += give，且若 give >= chunk 再 += breakMinutes（排满一块才留�
 | `riskyPlans`      | `feasibility` 为 `IMPOSSIBLE` 或 `OVERDUE` 的任务（风险提示卡的数据源）   |
 | `tightPlans`      | `feasibility` 为 `TIGHT` 的任务                                           |
 
-重算时机（`ui/AppRoot.kt`）：`remember(courses, settings, tasks, today, planRefresh)` 触发，即课表/设置/任务变化、跨日、或前台每约 5 分钟（`ticks % 10`，30 秒一次 tick）刷新一次。
+重算时机（`ui/AppRoot.kt`）：`remember(courses, settings, tasks, today, planRefresh)` 触发，即课表/设置/任务变化、自然日跨日、任务日跨过 04:00、或前台每约 5 分钟（`ticks % 10`，30 秒一次 tick）刷新一次。课程和日历日期仍按 00:00 自然日切换；只有每日任务使用 `taskDayAt(now) = now - 4 小时` 的业务日期。
 
 ---
 
@@ -250,7 +266,7 @@ cursor += give，且若 give >= chunk 再 += breakMinutes（排满一块才留�
 
 ### 4.2 触发器
 
-`remind/ReminderScheduler.kt` 在**应用启动、响铃、开机/换包/改时间、数据变更**时整体 `reschedule()`：先 `cancelAll()`，再重算全部闹钟。上课提醒、任务时段提醒、每日播报的窗口是 `HORIZON_DAYS = 8` 天；DDL 三级提醒逐件遍历未完成任务、不受窗口限制（只要求截止时间晚于 now）。全部闹钟总量上限 `MAX_ALARMS = 200` 条，按触发时刻排序后截断；早于 `now + 5 秒`（`MIN_LEAD_MILLIS`）的闹钟直接丢弃、不补发。
+`remind/ReminderScheduler.kt` 在**应用启动、响铃、开机/换包/改时间、数据变更**时整体 `reschedule()`：先 `cancelAll()`，再重算全部闹钟。上课提醒、任务时段提醒、每日播报的窗口是 `HORIZON_DAYS = 8` 天；DDL 三级提醒逐件遍历未完成任务、不受窗口限制（只要求截止时间晚于 now）。全部闹钟总量上限 `MAX_ALARMS = 200` 条；04:00 任务刷新固定预留 1 个名额，其余按触发时刻排序后截断。早于 `now + 5 秒`（`MIN_LEAD_MILLIS`）的闹钟直接丢弃、不补发。
 
 | #   | 提醒             | 触发时刻                                                       | 收件 Intent action                          | 开关                                                                 |
 | --- | ---------------- | -------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------- |
@@ -258,6 +274,7 @@ cursor += give，且若 give >= chunk 再 += breakMinutes（排满一块才留�
 | 2   | 任务时段开始     | 每个工作块的 `start`                                           | `...REMIND_SESSION`                         | `sessionReminderEnabled`，且存在 `remainingMinutes > 0` 的未完成任务 |
 | 3   | DDL 预警（三级） | 见下表                                                         | `...REMIND_DEADLINE`                        | 任务有截止时间且晚于 now                                             |
 | 4   | 每日播报         | 从今天起 8 天内每天 `digestMinute` 时刻                        | `...REMIND_DIGEST`                          | `digestEnabled`                                                      |
+| 5   | 任务列表刷新     | 严格晚于当前时刻的下一次本地 04:00                             | `...REFRESH_TASKS`                          | 始终开启；复位每日任务并整体重排，不发送通知                         |
 
 DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 
@@ -289,11 +306,11 @@ DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 
 底部 `NavigationBar` 与三页 `HorizontalPager` 共用 `PagerState.currentPage`；点击底栏动画切页，横滑同步选中项，预加载相邻一页。图片导入不再占主导航：
 
-| #   | tab  | 文件                   | 主要内容                                                                                                                                                          |
-| --- | ---- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | 任务 | `ui/ScheduleScreen.kt` | 今日模式按时间合并课程与排程任务，可登记/完成工作块；待安排任务显示风险入口；周课表参考 ClassReminder，按星期分组展示课程卡片；提供新增任务、新增单节课与课程编辑 |
-| 1   | 日历 | `ui/CalendarScreen.kt` | 月视图、逐日放假/调休、系统日历和内置 2026 安排、已设置例外删除                                                                                                   |
-| 2   | 设置 | `ui/SettingsScreen.kt` | 分类次页：学期与作息、任务排程、图片导入、数据备份、提醒权限；`BackHandler` 仅在当前页次级页面生效                                                                |
+| #   | tab  | 文件                   | 主要内容                                                                                                        |
+| --- | ---- | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 0   | 任务 | `ui/TaskScreen.kt`     | 当前默认首屏：今日课程摘要、任务列表、完成/编辑、新增任务或课程；`ScheduleScreen.kt` 未接线，仅保留历史实现参考 |
+| 1   | 日历 | `ui/CalendarScreen.kt` | 月视图、逐日放假/调休、系统日历和内置 2026 安排、已设置例外删除                                                 |
+| 2   | 设置 | `ui/SettingsScreen.kt` | 分类次页：学期与作息、任务排程、图片导入、数据备份、提醒权限；`BackHandler` 仅在当前页次级页面生效              |
 
 **设置与导入细节**：
 
@@ -304,9 +321,9 @@ DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 - 备份包含课程、设置和 DDL 任务，恢复同步三份界面状态并重排提醒；保留通知/精确闹钟设置、测试通知及 HyperOS 提示。
 - 任务卡操作、任务弹窗快捷项、导入类型和日历导入按钮使用可换行布局，避免窄屏强行挤在一行。
 
-**本轮验证边界**：已执行 `testDebugUnitTest assembleDebug lintDebug`，BUILD SUCCESSFUL，且 `git diff --check` 通过、编辑器诊断无错误。Debug APK 已通过 `adb install -r` 覆盖安装到 `e7781e7b`，前台包名为 `com.balance.deadlinereminder`；已核对今日/周课表切换，周课表不再出现表格/列表控件。真实课程数据、通知投递、OCR 保存和备份恢复仍未完整验收；未卸载、清数据或关机。
+**本轮验证边界**：已执行 `testDebugUnitTest assembleDebug assembleRelease lintDebug` 与 `git diff --check`，BUILD SUCCESSFUL。04:00 边界由 JVM 测试覆盖；Release APK 通过 v2 签名校验并覆盖安装到 `e7781e7b`，未卸载或清空数据，冷启动仍为“进行中 7 / 已完成 0”。`dumpsys alarm` 已确认下一次 `REFRESH_TASKS` 精确注册在本地 04:00；这只证明注册成功，不等于已经经历实际触发。普通已完成任务不会自动删除。删除按钮通过 Compose 对齐线与标题操作行中心相对固定，不使用垂直像素偏移；因真实数据中没有已完成任务，仅完成编译和布局代码检查。通知实际投递、OCR 保存和备份恢复未操作真实数据。
 
-`TaskEditDialog` 字段：`要做什么`（必填）、`大概需要多少分钟`、`截止日期 yyyy-MM-dd（可空）`、`截止时间 HH:mm`、快捷按钮 `今晚 / 明晚 / 后天晚 / 一周后`（设为当天 `23:59`）、`科目（可空，用来对上课程空档）`（含「私人」与各课程 chip）、`优先级`（低/中/高）、`已经投入多少分钟（可改）`、`备注（可空）`；底部提示「留空截止时间也能记，但不会排进时间表，也不会提醒。」；编辑已有任务时提供「删除」。
+`TaskEditDialog` 字段：`任务名`（必填）、`重要程度`（低/中/高）、`预估分钟`、`预计耗时未知`开关、新建时的`每日任务`开关、非每日任务的截止日期与时间（可空）、最早开始日期与时间（可空）、前置任务多选、`内容（可空）`；耗时未知时保留截止提醒但不生成工作时段；底部提示无截止任务仍进入未来 14 天计划并按时段提醒，但不发送 DDL 到期提醒；编辑已有任务时提供「删除」。
 
 ---
 
@@ -317,7 +334,7 @@ DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 ### 构建与测试
 
 - [ ] `cd /home/Balance/AgentWork/Projects/DeadlineReminder && ./gradlew :app:testDebugUnitTest :app:assembleDebug` 成功退出，`app/build/outputs/apk/debug/app-debug.apk` 生成。
-- [ ] `app/src/test/java/com/balance/deadlinereminder/` 下 7 个测试类共 69 个 `@Test` 全绿（`PlanEngineTest.kt` 14 个覆盖排程规则）。
+- [ ] `app/src/test/java/com/balance/deadlinereminder/` 下全部测试类与 `@Test` 全绿；其中 `PlanEngineTest.kt` 覆盖排程约束，`DailyTaskTest.kt` 覆盖 03:59 / 04:00 任务日边界。
 - [ ] `PlanEngineTest.kt` 不引用任何 Android API（`PlanEngine` 与 `WeekCalc` 是纯 Kotlin）。
 
 ### 排程
@@ -327,7 +344,11 @@ DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 - [ ] 每天排给任务的总分钟数不超过 `dailyCapMinutes`，且不超出 `[workWindowStart, workWindowEnd]`。
 - [ ] 上课时间不出现在任何工作块里。
 - [ ] 任务的 `deadline` 落在空档中间时，该块在截止时刻前结束。
-- [ ] `deadline` 留空的任务：`feasibility == NO_DEADLINE`，`blocks` 中无该任务，任务页不出现提醒。
+- [ ] `deadline` 留空的任务：`feasibility == NO_DEADLINE`，仍产生工作块与时段提醒，但没有 DDL 三级提醒。
+- [ ] 未到 `earliestStart` 的任务：`feasibility == NOT_STARTED`、无工作块并显示在进行中任务底部；到点重算后加入。
+- [ ] 前置任务未完成时：`feasibility == BLOCKED` 且无工作块；前置任务实际完成后解锁。
+- [ ] 预计耗时未知时：`feasibility == NEEDS_ESTIMATE` 且无工作块、无时段提醒；有截止时间时仍保留 DDL 三级提醒。
+- [ ] 只有重要程度为高且紧急度为紧急的任务使用高红；仅一个条件成立、未开始、阻塞或待估时均不得高红。
 - [ ] 已过截止时间且未完成的任务：`feasibility == OVERDUE`，出现在任务页风险提示中。
 - [ ] `done == true` 的任务不出现在 `Plan.plans` 也不出现在 `requiredMinutes`。
 - [ ] 工作量超出窗口容量的任务：`feasibility == IMPOSSIBLE`，`finishAt == null`，`shortfallMinutes > 0`。
@@ -342,6 +363,7 @@ DDL 三级（`LEVEL_WARN / LEVEL_URGENT / LEVEL_FINAL`）：
 - [ ] `digestEnabled` 打开时，每天 `digestMinute` 收到一条 `ddl_digest` 通知；关掉后不收。
 - [ ] `sessionReminderEnabled` 关掉后不再收到任务时段通知，DDL 三级提醒不受影响。
 - [ ] 手机重启后闹钟自动重建（`BootReceiver`）。
+- [ ] 系统闹钟中存在下一次 04:00 的 `REFRESH_TASKS`；触发后每日任务复位并重排，普通已完成任务保持不变。
 - [ ] 通知权限被拒绝时不崩溃、不刷屏；设置页「发一条测试通知」在授权后能收到。
 - [ ] 通知点开后进入应用主界面。
 

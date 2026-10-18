@@ -268,6 +268,7 @@ fun ScheduleScreen(
     if (creatingTask || editingTask != null) {
         TaskEditDialog(
             task = editingTask,
+            tasks = tasks,
             settings = settings,
             onDismiss = { creatingTask = false; editingTask = null },
             onSave = { task ->

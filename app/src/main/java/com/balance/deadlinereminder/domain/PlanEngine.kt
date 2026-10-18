@@ -31,8 +31,17 @@ enum class Feasibility {
     /** 截止时间已经过了还没做完。 */
     OVERDUE,
 
-    /** 没填截止时间，没法排程。 */
+    /** 没填截止时间，但仍按滚动窗口排程。 */
     NO_DEADLINE,
+
+    /** 还没到用户指定的最早开始时间。 */
+    NOT_STARTED,
+
+    /** 至少一个前置任务尚未完成。 */
+    BLOCKED,
+
+    /** 尚未填写预计耗时，暂不生成工作块。 */
+    NEEDS_ESTIMATE,
 }
 
 /** 一段被安排给某件任务的工作时间。 */
@@ -60,6 +69,8 @@ data class TaskPlan(
     /** 截止时间减去 [finishAt]，正数=富余，负数=来不及。 */
     val slackMinutes: Int?,
     val feasibility: Feasibility,
+    /** 尚未完成的直接前置任务 ID。 */
+    val blockedByIds: List<String> = emptyList(),
 ) {
     val firstBlock: WorkBlock? get() = blocks.firstOrNull()
     val shortfallMinutes: Int get() = (remainingMinutes - plannedMinutes).coerceAtLeast(0)
@@ -123,6 +134,7 @@ object PlanEngine {
         horizonDays: Int = HORIZON_DAYS,
     ): Plan {
         val unfinished = tasks.filter { !it.done }
+        val tasksById = tasks.associateBy(Task::id)
         val withDeadline = unfinished.filter { it.deadlineTime != null }
         val latestDeadline = withDeadline.mapNotNull { it.deadlineTime }.maxOrNull()
         val horizon = now.plusDays(horizonDays.toLong())
@@ -132,11 +144,22 @@ object PlanEngine {
             else -> latestDeadline
         }
 
-        // 只有"还没过期、还有活要干"的任务参与排程
+        // 未到最早开始时间或仍有前置任务的任务完全不占未来时段，到点/解锁后再重排。
         val active = unfinished
+            .filter { !it.estimateUnknown }
             .filter { it.remainingMinutes > 0 }
-            .filter { it.deadlineTime?.isAfter(now) == true }
-            .sortedWith(compareBy({ it.deadlineTime }, { -it.priority }, { it.title }))
+            .filter { it.deadlineTime?.isAfter(now) != false }
+            .filter { it.earliestStartTime?.isAfter(now) != true }
+            .filter { task -> task.dependencyIds.none { tasksById[it]?.done == false } }
+            .sortedWith(
+                compareBy<Task>(
+                    { it.deadlineTime == null },
+                    { it.deadlineTime ?: LocalDateTime.MAX },
+                    { -it.priority },
+                    { it.createdAt },
+                    { it.title },
+                )
+            )
 
         val slots = freeSlots(settings, courses, now, planUntil)
         val freeMinutes = slots.sumOf { it.minutes }
@@ -148,9 +171,9 @@ object PlanEngine {
             var cursor = slot.start
             while (cursor.isBefore(slot.end)) {
                 val candidate = active.firstOrNull { task ->
-                    (remaining[task.id] ?: 0) > 0 && task.deadlineTime!!.isAfter(cursor)
+                    (remaining[task.id] ?: 0) > 0 && task.deadlineTime?.isAfter(cursor) != false
                 } ?: break
-                val deadline = candidate.deadlineTime!!
+                val deadline = candidate.deadlineTime ?: planUntil
                 val left = remaining[candidate.id] ?: 0
                 val untilDeadline = ChronoUnit.MINUTES.between(cursor, deadline).toInt()
                 val avail = ChronoUnit.MINUTES.between(cursor, slot.end).toInt()
@@ -178,29 +201,46 @@ object PlanEngine {
             val planned = taskBlocks.sumOf { it.minutes }
             val doneAll = remaining[task.id] == 0 && task.remainingMinutes > 0 || task.remainingMinutes == 0
             val deadline = task.deadlineTime
+            val blockedByIds = task.dependencyIds.filter { tasksById[it]?.done == false }
+            val notStarted = task.earliestStartTime?.isAfter(now) == true
             val finishAt = if (doneAll && task.remainingMinutes > 0) taskBlocks.lastOrNull()?.end else null
             val slack = if (finishAt != null && deadline != null) {
                 ChronoUnit.MINUTES.between(finishAt, deadline).toInt()
             } else null
             val feasibility = when {
                 task.remainingMinutes == 0 -> Feasibility.DONE
+                deadline?.isBefore(now) == true -> Feasibility.OVERDUE
+                task.estimateUnknown -> Feasibility.NEEDS_ESTIMATE
+                notStarted -> Feasibility.NOT_STARTED
+                blockedByIds.isNotEmpty() -> Feasibility.BLOCKED
                 deadline == null -> Feasibility.NO_DEADLINE
-                deadline.isBefore(now) -> Feasibility.OVERDUE
                 finishAt == null -> Feasibility.IMPOSSIBLE
                 slack != null && slack < tightThreshold(task) -> Feasibility.TIGHT
                 else -> Feasibility.COMFORTABLE
             }
-            val available = deadline?.takeIf { it.isAfter(now) }?.let {
-                freeSlots(settings, courses, now, minOf(it, planUntil)).sumOf(TimeRange::minutes)
-            } ?: 0
-            TaskPlan(task, deadline, task.remainingMinutes, taskBlocks, planned, available, finishAt, slack, feasibility)
+            val availableUntil = deadline?.takeIf { it.isAfter(now) }?.let { minOf(it, planUntil) } ?: planUntil
+            val available = if (notStarted || blockedByIds.isNotEmpty()) 0 else {
+                freeSlots(settings, courses, now, availableUntil).sumOf(TimeRange::minutes)
+            }
+            TaskPlan(
+                task,
+                deadline,
+                task.remainingMinutes,
+                taskBlocks,
+                planned,
+                available,
+                finishAt,
+                slack,
+                feasibility,
+                blockedByIds,
+            )
         }
 
         return Plan(
             generatedAt = now,
             horizonEnd = planUntil,
             freeMinutes = freeMinutes,
-            requiredMinutes = unfinished.sumOf { it.remainingMinutes },
+            requiredMinutes = unfinished.filter { !it.estimateUnknown }.sumOf { it.remainingMinutes },
             blocks = blocks,
             plans = plans,
         )

@@ -6,18 +6,20 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import com.balance.deadlinereminder.data.Store
+import com.balance.deadlinereminder.data.nextTaskRefreshAt
 import com.balance.deadlinereminder.domain.PlanEngine
 import com.balance.deadlinereminder.domain.WeekCalc
 import java.time.LocalDateTime
 import java.time.ZoneId
 
 /**
- * 把四类提醒挂成 AlarmManager 精确闹钟，全部落在 ReminderReceiver 上：
+ * 把四类通知提醒与一类维护任务挂成 AlarmManager 精确闹钟，全部落在 ReminderReceiver 上：
  *
  * 1. **上课提醒** —— 跟课表走，课前 N 分钟（原来的行为）。
  * 2. **任务时段提醒** —— 排出"什么时候做什么"之后，每个工作块的开始时刻提醒。
  * 3. **DDL 预警** —— 截止前的预警点、紧急点、以及截止当刻。
  * 4. **每日播报** —— 每天早上把今天要推进的事播一次。
+ * 5. **任务刷新** —— 每天凌晨 4 点切换任务日并重排，不发送通知。
  *
  * 排窗是未来 [HORIZON_DAYS] 天，每次响铃、开机、改数据都全部重排一次。
  * 不常驻后台，也不会因为手机重启漏提醒。
@@ -28,6 +30,7 @@ object ReminderScheduler {
     const val ACTION_SESSION = "com.balance.deadlinereminder.REMIND_SESSION"
     const val ACTION_DEADLINE = "com.balance.deadlinereminder.REMIND_DEADLINE"
     const val ACTION_DIGEST = "com.balance.deadlinereminder.REMIND_DIGEST"
+    const val ACTION_TASK_REFRESH = "com.balance.deadlinereminder.REFRESH_TASKS"
 
     private const val PREFS = "reminder_pending"
     private const val KEY_CODES = "codes"
@@ -44,6 +47,7 @@ object ReminderScheduler {
 
         val store = Store.get(context)
         val now = LocalDateTime.now()
+        store.refreshDailyTasks(now)
         val nowMillis = System.currentTimeMillis()
         val settings = store.settings
         val alarms = mutableListOf<Alarm>()
@@ -107,9 +111,25 @@ object ReminderScheduler {
             }
         }
 
+        // 5. 每天凌晨 4 点切换任务日；即使没有其他提醒，也会重置每日任务并触发重排。
+        add(
+            group = 8,
+            key = "task-refresh@${nextTaskRefreshAt(now)}",
+            at = nextTaskRefreshAt(now),
+            intent = Intent(context, ReminderReceiver::class.java).setAction(ACTION_TASK_REFRESH),
+        )
+
         val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
         val codes = mutableListOf<Int>()
-        alarms.sortedBy { it.atMillis }.take(MAX_ALARMS).forEach { alarm ->
+        val refreshAlarm = alarms.firstOrNull { it.intent.action == ACTION_TASK_REFRESH }
+        val selectedAlarms = alarms
+            .filterNot { it.intent.action == ACTION_TASK_REFRESH }
+            .sortedBy { it.atMillis }
+            .take(MAX_ALARMS - if (refreshAlarm == null) 0 else 1)
+            .toMutableList()
+            .apply { refreshAlarm?.let(::add) }
+            .sortedBy { it.atMillis }
+        selectedAlarms.forEach { alarm ->
             runCatching {
                 if (exactAllowed) {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, alarm.atMillis, pending(context, alarm, PendingIntent.FLAG_UPDATE_CURRENT))
@@ -139,7 +159,7 @@ object ReminderScheduler {
         saveCodes(context, emptyList())
     }
 
-    private val ALL_ACTIONS = listOf(ACTION_CLASS, ACTION_SESSION, ACTION_DEADLINE, ACTION_DIGEST)
+    private val ALL_ACTIONS = listOf(ACTION_CLASS, ACTION_SESSION, ACTION_DEADLINE, ACTION_DIGEST, ACTION_TASK_REFRESH)
 
     private fun pending(context: Context, alarm: Alarm, flags: Int): PendingIntent =
         PendingIntent.getBroadcast(context, alarm.code, alarm.intent, flags or PendingIntent.FLAG_IMMUTABLE)

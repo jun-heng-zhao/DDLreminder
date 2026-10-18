@@ -78,6 +78,8 @@ object Codec {
                     t.priority.toString(), esc(t.notes), if (t.done) "1" else "0",
                     esc(t.createdAt), t.chunkMinutes.toString(),
                     if (t.daily) "1" else "0", esc(t.completedOn),
+                    esc(t.earliestStart), t.dependencyIds.joinToString(",") { escListItem(it) },
+                    if (t.estimateUnknown) "1" else "0",
                 ).joinToString("\t")
             )
         }
@@ -178,6 +180,13 @@ object Codec {
                         chunkMinutes = f.getOrNull(11)?.toIntOrNull() ?: -1,
                         daily = f.getOrNull(12) == "1",
                         completedOn = unesc(f.getOrNull(13).orEmpty()),
+                        earliestStart = unesc(f.getOrNull(14).orEmpty()),
+                        dependencyIds = f.getOrNull(15).orEmpty()
+                            .split(',')
+                            .map(::unescListItem)
+                            .filter(String::isNotBlank)
+                            .distinct(),
+                        estimateUnknown = f.getOrNull(16) == "1",
                     )
                 }
             }
@@ -189,6 +198,11 @@ object Codec {
 
     private fun esc(s: String): String =
         s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+    /** 任务 ID 通常是 UUID；仍转义列表分隔符，避免手工导入的数据破坏字段。 */
+    private fun escListItem(s: String): String = esc(s).replace(",", "\\c")
+
+    private fun unescListItem(s: String): String = unesc(s.replace("\\c", ","))
 
     private fun unesc(s: String): String {
         if (!s.contains('\\')) return s

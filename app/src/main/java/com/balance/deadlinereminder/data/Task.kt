@@ -33,11 +33,18 @@ data class Task(
     val daily: Boolean = false,
     /** 每日任务最近一次完成日期，格式 yyyy-MM-dd。 */
     val completedOn: String = "",
+    /** 最早开始时间；未到该时刻前不参与排程。 */
+    val earliestStart: String = "",
+    /** 必须先实际完成的任务 ID；不存在的 ID 按已移除处理。 */
+    val dependencyIds: List<String> = emptyList(),
+    /** 预计耗时尚不明确；保留任务约束，但暂不生成工作块。 */
+    val estimateUnknown: Boolean = false,
 ) {
     /** 还没投入的时间；已投入超过预估时为 0。 */
     val remainingMinutes: Int get() = (estimateMinutes - spentMinutes).coerceAtLeast(0)
 
     val deadlineTime: LocalDateTime? get() = parseDateTime(deadline)
+    val earliestStartTime: LocalDateTime? get() = parseDateTime(earliestStart)
 
     /** 0.0～1.0，用于进度条。 */
     val progress: Float
@@ -69,15 +76,17 @@ fun parseDateTime(text: String): LocalDateTime? {
 /** 中文优先级名。 */
 val PRIORITY_NAMES = listOf("低", "中", "高")
 
-/** 按可用空闲时间与剩余工作量的倍率判断任务紧急程度。 */
+/** 按可用空闲时间、剩余工作量与重要程度判断任务紧急程度。 */
 enum class Urgency { RELAXED, ATTENTION, URGENT }
 
 fun urgencyFor(freeMinutes: Int, task: Task): Urgency {
     if (task.remainingMinutes <= 0) return Urgency.RELAXED
     val ratio = freeMinutes.toFloat() / task.remainingMinutes.toFloat()
+    val relaxedThreshold = 4f + task.priority.coerceIn(0, 2)
+    val attentionThreshold = 2f + task.priority.coerceIn(0, 2)
     return when {
-        ratio >= 5f -> Urgency.RELAXED
-        ratio >= 3f -> Urgency.ATTENTION
+        ratio >= relaxedThreshold -> Urgency.RELAXED
+        ratio >= attentionThreshold -> Urgency.ATTENTION
         else -> Urgency.URGENT
     }
 }
