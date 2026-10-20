@@ -73,11 +73,13 @@ class Store private constructor(private val appContext: Context) {
         courses: List<Course> = this.courses,
         settings: AppSettings = this.settings,
         tasks: List<Task> = this.tasks,
+        taskDay: LocalDate = taskDayAt(LocalDateTime.now()),
     ) {
+        val maintainedTasks = refreshDailyTaskStates(tasks, taskDay)
         this.courses = courses
         this.settings = settings
-        this.tasks = tasks
-        runCatching { file.writeText(Codec.encode(ScheduleData(courses, settings, tasks))) }
+        this.tasks = maintainedTasks
+        runCatching { file.writeText(Codec.encode(ScheduleData(courses, settings, maintainedTasks))) }
     }
 
     /** 导出一份到外部目录，返回路径；失败返回 null。 */
@@ -123,7 +125,7 @@ class Store private constructor(private val appContext: Context) {
         val idx = next.indexOfFirst { it.id == task.id }
         if (idx >= 0) next[idx] = task else next += task
         update(tasks = next)
-        return next
+        return tasks
     }
 
     fun deleteTask(taskId: String): List<Task> {
@@ -136,7 +138,7 @@ class Store private constructor(private val appContext: Context) {
 
     /** 登记投入：完成一段就累加，累加到预估耗时即视为做完。 */
     fun addSpent(taskId: String, minutes: Int): List<Task> {
-        val today = taskDayAt(LocalDateTime.now()).toString()
+        val taskDay = taskDayAt(LocalDateTime.now())
         val next = tasks.map { task ->
             if (task.id != taskId) task
             else {
@@ -145,34 +147,35 @@ class Store private constructor(private val appContext: Context) {
                 task.copy(
                     spentMinutes = spent,
                     done = done,
-                    completedOn = if (task.daily && done) today else task.completedOn,
+                    completedOn = if (task.daily && done) taskDay.toString() else task.completedOn,
                 )
             }
         }
-        update(tasks = next)
-        return next
+        update(tasks = next, taskDay = taskDay)
+        return tasks
     }
 
     fun setTaskDone(taskId: String, done: Boolean): List<Task> {
-        val today = taskDayAt(LocalDateTime.now()).toString()
+        val taskDay = taskDayAt(LocalDateTime.now())
         val next = tasks.map { task ->
             if (task.id != taskId) task
             else if (done) task.copy(
                 done = true,
                 spentMinutes = maxOf(task.spentMinutes, task.estimateMinutes),
-                completedOn = if (task.daily) today else task.completedOn,
+                completedOn = if (task.daily) taskDay.toString() else task.completedOn,
             )
             else task.copy(done = false, spentMinutes = 0, completedOn = if (task.daily) "" else task.completedOn)
         }
-        update(tasks = next)
-        return next
+        update(tasks = next, taskDay = taskDay)
+        return tasks
     }
 
     /** 每天凌晨 4 点跨任务日，使上一任务日完成的每日任务重新出现。 */
     fun refreshDailyTasks(now: LocalDateTime = LocalDateTime.now()): List<Task> {
+        val taskDay = taskDayAt(now)
         val previous = tasks
-        val next = taskState.refreshDaily(taskDayAt(now))
-        if (next != previous) update(tasks = next)
+        val next = taskState.refreshDaily(taskDay)
+        if (next != previous) update(tasks = next, taskDay = taskDay)
         return next
     }
 
@@ -186,13 +189,17 @@ class Store private constructor(private val appContext: Context) {
     }
 }
 
-/** 纯函数版本供前台、提醒与 JVM 测试共享；同一天重复调用不会改变数据。 */
+/** 清除普通已完成任务并复位过期的每日任务；同一天重复调用不会改变数据。 */
 fun refreshDailyTaskStates(tasks: List<Task>, today: LocalDate): List<Task> {
     val date = today.toString()
-    return tasks.map { task ->
+    val completedTaskIds = tasks.filter { !it.daily && it.done }.mapTo(mutableSetOf(), Task::id)
+    return tasks.mapNotNull { task ->
+        if (task.id in completedTaskIds) return@mapNotNull null
         if (task.daily && task.done && task.completedOn != date) {
             task.copy(done = false, spentMinutes = 0, completedOn = "")
-        } else task
+        } else {
+            task.copy(dependencyIds = task.dependencyIds.filterNot(completedTaskIds::contains))
+        }
     }
 }
 

@@ -59,9 +59,19 @@ class DailyTaskTest {
     }
 
     @Test
-    fun `普通任务不受跨日刷新影响`() {
+    fun `普通已完成任务会在维护时清除`() {
         val task = Task(id = "normal", title = "报告", done = true, spentMinutes = 60)
-        assertEquals(task, refreshDailyTaskStates(listOf(task), today).single())
+        assertTrue(refreshDailyTaskStates(listOf(task), today).isEmpty())
+    }
+
+    @Test
+    fun `清除普通已完成任务时会解除其他任务的依赖`() {
+        val completed = Task(id = "completed", title = "资料收集", done = true)
+        val pending = Task(id = "pending", title = "写报告", dependencyIds = listOf("completed"))
+
+        val refreshed = refreshDailyTaskStates(listOf(completed, pending), today)
+
+        assertEquals(listOf(pending.copy(dependencyIds = emptyList())), refreshed)
     }
 
     @Test
